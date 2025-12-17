@@ -261,7 +261,7 @@ void AnalogExactAudioProcessor::updateDSPParameters()
     monoMix.setTargetValue (isMono ? 1.0f : 0.0f);
     
     // Update all channel DSP
-    for (int ch = 0; ch < 2; ++ch)
+    for (size_t ch = 0; ch < 2; ++ch)
     {
         auto& dsp = channelDSP[ch];
         
