@@ -19,30 +19,32 @@ juce_add_plugin(AnalogExact
     PLUGIN_CODE Anex
     FORMATS ${FORMATS}
     PRODUCT_NAME "AnalogExact"
-    
+
     # Bundle ID for macOS
     BUNDLE_ID com.yourcompany.analogexact
-    
+
     # Plugin characteristics
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    
-    # Copy plugin after build
-    COPY_PLUGIN_AFTER_BUILD TRUE
-    
+
+    # IMPORTANT for GitHub Actions / online builds
+    COPY_PLUGIN_AFTER_BUILD FALSE
+
     # VST3 settings
     VST3_CATEGORIES "Fx"
-    
-    # AU settings  
+
+    # AU settings
     AU_MAIN_TYPE kAudioUnitType_Effect
-    
+
     # Plugin description
     DESCRIPTION "Analog Tape Machine Emulation"
-    PLUGIN_CODE Anex
 )
+
+# This is the key fix for: 'JuceHeader.h' file not found
+juce_generate_juce_header(AnalogExact)
 
 # Source files
 target_sources(AnalogExact
@@ -51,7 +53,7 @@ target_sources(AnalogExact
         Source/PluginEditor.cpp
 )
 
-# JUCE modules
+# JUCE modules / definitions
 target_compile_definitions(AnalogExact
     PUBLIC
         JUCE_WEB_BROWSER=0
@@ -66,6 +68,7 @@ target_link_libraries(AnalogExact
         juce::juce_audio_utils
         juce::juce_audio_processors
         juce::juce_dsp
+        juce::juce_gui_extra
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
