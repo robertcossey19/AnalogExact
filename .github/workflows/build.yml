@@ -14,10 +14,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get JUCE
+      - name: Get JUCE (JUCE 8 for WebView)
         run: |
           rm -rf JUCE
-          git clone --depth 1 --branch 7.0.9 https://github.com/juce-framework/JUCE.git JUCE
+          git clone --depth 1 --branch 8.0.9 https://github.com/juce-framework/JUCE.git JUCE
 
       - name: Configure (Universal)
         run: |
@@ -34,9 +34,9 @@ jobs:
           set -e
           mkdir -p artifacts
 
-          VST3_PATH="$(find build -type d -path "*_artefacts/Release/VST3/*.vst3" -maxdepth 6 | head -n 1)"
-          AU_PATH="$(find build -type d -path "*_artefacts/Release/AU/*.component" -maxdepth 6 | head -n 1)"
-          APP_PATH="$(find build -type d -path "*_artefacts/Release/Standalone/*.app" -maxdepth 6 | head -n 1)"
+          VST3_PATH="$(find build -type d -path "*_artefacts/Release/VST3/*.vst3" -maxdepth 8 | head -n 1)"
+          AU_PATH="$(find build -type d -path "*_artefacts/Release/AU/*.component" -maxdepth 8 | head -n 1)"
+          APP_PATH="$(find build -type d -path "*_artefacts/Release/Standalone/*.app" -maxdepth 8 | head -n 1)"
 
           echo "VST3: $VST3_PATH"
           echo "AU:   $AU_PATH"
@@ -70,10 +70,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get JUCE
+      - name: Get JUCE (JUCE 8 for WebView)
         run: |
           if (Test-Path JUCE) { Remove-Item -Recurse -Force JUCE }
-          git clone --depth 1 --branch 7.0.9 https://github.com/juce-framework/JUCE.git JUCE
+          git clone --depth 1 --branch 8.0.9 https://github.com/juce-framework/JUCE.git JUCE
 
       - name: Configure
         run: |
@@ -87,6 +87,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+
           $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter *.vst3 |
                  Where-Object { $_.FullName -match "_artefacts\\Release\\VST3" } |
                  Select-Object -First 1
