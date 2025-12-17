@@ -2,403 +2,28 @@
 #include "PluginEditor.h"
 
 //==============================================================================
-// VUMeter Implementation
-//==============================================================================
-VUMeter::VUMeter()
-{
-    startTimerHz (30);
-}
-
-void VUMeter::paint (juce::Graphics& g)
-{
-    auto bounds = getLocalBounds().toFloat();
-    
-    // Housing
-    g.setColour (juce::Colour (0xff111827));
-    g.fillRoundedRectangle (bounds, 8.0f);
-    
-    g.setColour (juce::Colour (0xff4b5563));
-    g.drawRoundedRectangle (bounds.reduced (2.0f), 8.0f, 3.0f);
-    
-    // Scale background
-    auto scaleBounds = bounds.reduced (12.0f, 30.0f);
-    g.setColour (juce::Colour (0xffffebcd));
-    g.fillRoundedRectangle (scaleBounds, 4.0f);
-    
-    // Needle position (-70 to +20 degrees)
-    float dbLevel = 20.0f * std::log10 (displayLevel + 1e-9f);
-    float angle = juce::jmap (dbLevel, -50.0f, 5.0f, -70.0f, 20.0f);
-    angle = juce::jlimit (-70.0f, 20.0f, angle);
-    
-    // Draw needle
-    auto center = scaleBounds.getCentre();
-    float needleLength = scaleBounds.getHeight();
-    float angleRad = angle * juce::MathConstants<float>::pi / 180.0f;
-    
-    juce::Point<float> needleEnd (
-        center.x + needleLength * 0.5f * std::sin (angleRad),
-        scaleBounds.getBottom() - needleLength * 0.5f * std::cos (angleRad)
-    );
-    
-    g.setColour (juce::Colour (0xffdc2626));
-    g.drawLine (center.x, scaleBounds.getBottom(), needleEnd.x, needleEnd.y, 2.0f);
-}
-
-void VUMeter::setLevel (float level)
-{
-    currentLevel = level;
-}
-
-void VUMeter::timerCallback()
-{
-    // Smooth decay
-    float attack = 0.3f;
-    float decay = 0.1f;
-    
-    if (currentLevel > displayLevel)
-        displayLevel += (currentLevel - displayLevel) * attack;
-    else
-        displayLevel += (currentLevel - displayLevel) * decay;
-    
-    repaint();
-}
-
-//==============================================================================
-// RotaryKnob Implementation
-//==============================================================================
-RotaryKnob::RotaryKnob (const juce::String& labelText)
-    : label (labelText)
-{
-}
-
-void RotaryKnob::paint (juce::Graphics& g)
-{
-    auto bounds = getLocalBounds().toFloat();
-    auto knobArea = bounds.reduced (10.0f, 10.0f);
-    
-    // Knob body
-    g.setGradientFill (juce::ColourGradient (
-        juce::Colour (0xff5a6578), knobArea.getTopLeft(),
-        juce::Colour (0xff2d3748), knobArea.getBottomRight(),
-        false));
-    g.fillEllipse (knobArea);
-    
-    // Border
-    g.setColour (juce::Colour (0xff1a202c));
-    g.drawEllipse (knobArea, 2.0f);
-    
-    // Indicator
-    float angle = juce::jmap (value, 0.0f, 1.0f, -135.0f, 135.0f);
-    float angleRad = angle * juce::MathConstants<float>::pi / 180.0f;
-    
-    auto center = knobArea.getCentre();
-    float radius = knobArea.getWidth() * 0.42f;
-    
-    juce::Point<float> indicatorPos (
-        center.x + radius * std::sin (angleRad),
-        center.y - radius * std::cos (angleRad)
-    );
-    
-    g.setColour (juce::Colour (0xffe2e8f0));
-    g.fillEllipse (indicatorPos.x - 3.0f, indicatorPos.y - 3.0f, 6.0f, 6.0f);
-    
-    // Label
-    g.setColour (juce::Colours::white);
-    g.setFont (14.0f);
-    g.drawText (label, bounds.removeFromBottom (20), juce::Justification::centred);
-}
-
-void RotaryKnob::resized()
-{
-}
-
-void RotaryKnob::setValue (float newValue)
-{
-    value = juce::jlimit (0.0f, 1.0f, newValue);
-    repaint();
-}
-
-void RotaryKnob::mouseDown (const juce::MouseEvent& e)
-{
-    dragStart = e.getPosition();
-    dragStartValue = value;
-}
-
-void RotaryKnob::mouseDrag (const juce::MouseEvent& e)
-{
-    float dragDist = (dragStart.y - e.y) / 150.0f;
-    float newValue = juce::jlimit (0.0f, 1.0f, dragStartValue + dragDist);
-    
-    if (newValue != value)
-    {
-        value = newValue;
-        repaint();
-        
-        if (onValueChange)
-            onValueChange (value);
-    }
-}
-
-void RotaryKnob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
-{
-    juce::ignoreUnused (e);
-    
-    float delta = wheel.deltaY * 0.01f;
-    float newValue = juce::jlimit (0.0f, 1.0f, value + delta);
-    
-    if (newValue != value)
-    {
-        value = newValue;
-        repaint();
-        
-        if (onValueChange)
-            onValueChange (value);
-    }
-}
-
-//==============================================================================
-// Editor Implementation
-//==============================================================================
 AnalogExactAudioProcessorEditor::AnalogExactAudioProcessorEditor (
     AnalogExactAudioProcessor& p,
     juce::AudioProcessorValueTreeState& vts)
     : AudioProcessorEditor (&p), audioProcessor (p), valueTreeState (vts)
 {
-    setSize (900, 750);
+    setSize (920, 800);
+    
+    // Create WebView with custom handler
+    webView = std::make_unique<CustomWebView> (*this);
+    addAndMakeVisible (webView.get());
+    
+    // Generate and load HTML
+    juce::String html = generateHTML();
+    webView->goToURL ("data:text/html;charset=utf-8," + juce::URL::addEscapeChars (html, false));
+    
+    // Start timer for updates
     startTimerHz (30);
     
-    // Setup sliders (hidden, for parameter attachments)
-    inputSlider.setRange (-12.0, 12.0, 0.1);
-    outputSlider.setRange (-24.0, 6.0, 0.1);
-    biasSlider.setRange (-5.0, 5.0, 0.1);
-    
-    addChildComponent (inputSlider);
-    addChildComponent (outputSlider);
-    addChildComponent (biasSlider);
-    
-    // Create attachments
-    inputAttachment.reset (new juce::AudioProcessorValueTreeState::SliderAttachment (
-        valueTreeState, AnalogExactAudioProcessor::INPUT_GAIN_ID, inputSlider));
-    outputAttachment.reset (new juce::AudioProcessorValueTreeState::SliderAttachment (
-        valueTreeState, AnalogExactAudioProcessor::OUTPUT_GAIN_ID, outputSlider));
-    biasAttachment.reset (new juce::AudioProcessorValueTreeState::SliderAttachment (
-        valueTreeState, AnalogExactAudioProcessor::BIAS_ID, biasSlider));
-    
-    // Setup knobs
-    inputKnob.onValueChange = [this] (float val) {
-        float dbVal = juce::jmap (val, 0.0f, 1.0f, -12.0f, 12.0f);
-        inputSlider.setValue (dbVal, juce::sendNotificationSync);
-        updateKnobLabels();
-    };
-    
-    outputKnob.onValueChange = [this] (float val) {
-        float dbVal = juce::jmap (val, 0.0f, 1.0f, -24.0f, 6.0f);
-        outputSlider.setValue (dbVal, juce::sendNotificationSync);
-        updateKnobLabels();
-    };
-    
-    biasKnob.onValueChange = [this] (float val) {
-        float dbVal = juce::jmap (val, 0.0f, 1.0f, -5.0f, 5.0f);
-        biasSlider.setValue (dbVal, juce::sendNotificationSync);
-        updateKnobLabels();
-    };
-    
-    addAndMakeVisible (inputKnob);
-    addAndMakeVisible (outputKnob);
-    addAndMakeVisible (biasKnob);
-    
-    // Setup labels
-    auto setupLabel = [this] (juce::Label& label) {
-        label.setJustificationType (juce::Justification::centred);
-        label.setColour (juce::Label::textColourId, juce::Colour (0xfffcd34d));
-        addAndMakeVisible (label);
-    };
-    
-    setupLabel (inputLabel);
-    setupLabel (outputLabel);
-    setupLabel (biasLabel);
-    
-    // VU Meters
-    addAndMakeVisible (vuMeterL);
-    addAndMakeVisible (vuMeterR);
-    
-    // Monitor buttons
-    setupButton (monitorInputBtn, "Dry input passthrough");
-    setupButton (monitorReproBtn, "Processed tape repro");
-    
-    monitorInputBtn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::MONITOR_ID);
-        param->store (0.0f);
-        updateMonitorButtons();
-    };
-    
-    monitorReproBtn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::MONITOR_ID);
-        param->store (1.0f);
-        updateMonitorButtons();
-    };
-    
-    // Headblock buttons
-    setupButton (headblockStereoBtn, "Stereo 2-track recording");
-    setupButton (headblockMonoBtn, "Full-track mono");
-    
-    headblockStereoBtn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::HEADBLOCK_ID);
-        param->store (0.0f);
-        updateHeadblockButtons();
-    };
-    
-    headblockMonoBtn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::HEADBLOCK_ID);
-        param->store (1.0f);
-        updateHeadblockButtons();
-    };
-    
-    // Speed buttons
-    setupButton (speed75Btn);
-    setupButton (speed15Btn);
-    setupButton (speed30Btn);
-    
-    speed75Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::SPEED_ID);
-        param->store (0.0f);
-        updateSpeedButtons();
-    };
-    
-    speed15Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::SPEED_ID);
-        param->store (1.0f);
-        updateSpeedButtons();
-    };
-    
-    speed30Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::SPEED_ID);
-        param->store (2.0f);
-        updateSpeedButtons();
-    };
-    
-    // Flux buttons
-    setupButton (flux185Btn);
-    setupButton (flux250Btn);
-    setupButton (flux370Btn);
-    
-    flux185Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::FLUX_ID);
-        param->store (0.0f);
-        updateFluxButtons();
-    };
-    
-    flux250Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::FLUX_ID);
-        param->store (1.0f);
-        updateFluxButtons();
-    };
-    
-    flux370Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::FLUX_ID);
-        param->store (2.0f);
-        updateFluxButtons();
-    };
-    
-    // EQ buttons
-    setupButton (eqNABBtn);
-    setupButton (eqIECBtn);
-    
-    eqNABBtn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::EQ_ID);
-        param->store (0.0f);
-        updateEQButtons();
-    };
-    
-    eqIECBtn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::EQ_ID);
-        param->store (1.0f);
-        updateEQButtons();
-    };
-    
-    // Tape buttons
-    setupButton (tape406Btn);
-    setupButton (tape456Btn);
-    setupButton (tape499Btn);
-    setupButton (tapeGP9Btn);
-    setupButton (tapeSM900Btn);
-    setupButton (tapeSM911Btn);
-    
-    tape406Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TAPE_TYPE_ID);
-        param->store (0.0f);
-        updateTapeButtons();
-    };
-    
-    tape456Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TAPE_TYPE_ID);
-        param->store (1.0f);
-        updateTapeButtons();
-    };
-    
-    tape499Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TAPE_TYPE_ID);
-        param->store (2.0f);
-        updateTapeButtons();
-    };
-    
-    tapeGP9Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TAPE_TYPE_ID);
-        param->store (3.0f);
-        updateTapeButtons();
-    };
-    
-    tapeSM900Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TAPE_TYPE_ID);
-        param->store (4.0f);
-        updateTapeButtons();
-    };
-    
-    tapeSM911Btn.onClick = [this] {
-        auto* param = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TAPE_TYPE_ID);
-        param->store (5.0f);
-        updateTapeButtons();
-    };
-    
-    // Toggle buttons
-    addAndMakeVisible (transformerBtn);
-    addAndMakeVisible (autoCalBtn);
-    
-    transformerAttachment.reset (new juce::AudioProcessorValueTreeState::ButtonAttachment (
-        valueTreeState, AnalogExactAudioProcessor::TRANSFORMER_ID, transformerBtn));
-    autoCalAttachment.reset (new juce::AudioProcessorValueTreeState::ButtonAttachment (
-        valueTreeState, AnalogExactAudioProcessor::AUTO_CAL_ID, autoCalBtn));
-    
-    transformerBtn.setColour (juce::ToggleButton::textColourId, juce::Colours::white);
-    autoCalBtn.setColour (juce::ToggleButton::textColourId, juce::Colours::white);
-    
-    // Tech panel button
-    setupButton (techPanelBtn);
-    techPanelBtn.onClick = [this] {
-        techPanelOpen = !techPanelOpen;
-        resized();
-    };
-    
-    // Title
-    titleLabel.setText ("ANALOGEXACT", juce::dontSendNotification);
-    titleLabel.setFont (juce::Font (28.0f, juce::Font::bold));
-    titleLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    titleLabel.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (titleLabel);
-    
-    subtitleLabel.setText ("Analog Tape Emulation • 768 kHz Non-linear Core", juce::dontSendNotification);
-    subtitleLabel.setFont (juce::Font (12.0f));
-    subtitleLabel.setColour (juce::Label::textColourId, juce::Colour (0xff9ca3af));
-    subtitleLabel.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (subtitleLabel);
-    
-    updateMonitorButtons();
-    updateHeadblockButtons();
-    updateSpeedButtons();
-    updateFluxButtons();
-    updateEQButtons();
-    updateTapeButtons();
-    updateKnobLabels();
+    // Initial parameter sync (after a short delay to let WebView load)
+    juce::Timer::callAfterDelay (500, [this]() {
+        updateWebViewParameters();
+    });
 }
 
 AnalogExactAudioProcessorEditor::~AnalogExactAudioProcessorEditor()
@@ -413,206 +38,536 @@ void AnalogExactAudioProcessorEditor::paint (juce::Graphics& g)
 
 void AnalogExactAudioProcessorEditor::resized()
 {
-    auto area = getLocalBounds().reduced (10);
-    
-    // Title
-    auto titleArea = area.removeFromTop (50);
-    titleLabel.setBounds (titleArea.removeFromTop (30));
-    subtitleLabel.setBounds (titleArea);
-    
-    area.removeFromTop (10);
-    
-    // VU Meters
-    auto vuArea = area.removeFromTop (100);
-    vuMeterL.setBounds (vuArea.removeFromLeft (getWidth() / 2 - 15).reduced (5));
-    vuMeterR.setBounds (vuArea.reduced (5));
-    
-    area.removeFromTop (10);
-    
-    // Knobs row
-    auto knobArea = area.removeFromTop (140);
-    int knobWidth = getWidth() / 3;
-    
-    auto inputArea = knobArea.removeFromLeft (knobWidth);
-    inputKnob.setBounds (inputArea.removeFromTop (100).reduced (20));
-    inputLabel.setBounds (inputArea.removeFromTop (20));
-    
-    auto outputArea = knobArea.removeFromLeft (knobWidth);
-    outputKnob.setBounds (outputArea.removeFromTop (100).reduced (20));
-    outputLabel.setBounds (outputArea.removeFromTop (20));
-    
-    biasKnob.setBounds (knobArea.removeFromTop (100).reduced (20));
-    biasLabel.setBounds (knobArea.removeFromTop (20));
-    
-    area.removeFromTop (10);
-    
-    // Monitor section
-    auto monitorArea = area.removeFromTop (50);
-    auto monBtnArea = monitorArea.reduced (10);
-    monitorInputBtn.setBounds (monBtnArea.removeFromLeft (monBtnArea.getWidth() / 2).reduced (5));
-    monitorReproBtn.setBounds (monBtnArea.reduced (5));
-    
-    // Headblock section
-    auto headblockArea = area.removeFromTop (50);
-    auto headBtnArea = headblockArea.reduced (10);
-    headblockStereoBtn.setBounds (headBtnArea.removeFromLeft (headBtnArea.getWidth() / 2).reduced (5));
-    headblockMonoBtn.setBounds (headBtnArea.reduced (5));
-    
-    area.removeFromTop (10);
-    
-    // Tech panel button
-    auto techBtnArea = area.removeFromTop (30);
-    techPanelBtn.setBounds (techBtnArea.reduced (getWidth() / 3, 0));
-    
-    // Tech panel content
-    if (techPanelOpen)
-    {
-        area.removeFromTop (10);
-        
-        // Speed
-        auto speedArea = area.removeFromTop (40);
-        int btnW = speedArea.getWidth() / 3;
-        speed75Btn.setBounds (speedArea.removeFromLeft (btnW).reduced (5));
-        speed15Btn.setBounds (speedArea.removeFromLeft (btnW).reduced (5));
-        speed30Btn.setBounds (speedArea.reduced (5));
-        
-        // Flux
-        auto fluxArea = area.removeFromTop (40);
-        btnW = fluxArea.getWidth() / 3;
-        flux185Btn.setBounds (fluxArea.removeFromLeft (btnW).reduced (5));
-        flux250Btn.setBounds (fluxArea.removeFromLeft (btnW).reduced (5));
-        flux370Btn.setBounds (fluxArea.reduced (5));
-        
-        // EQ
-        auto eqArea = area.removeFromTop (40);
-        eqNABBtn.setBounds (eqArea.removeFromLeft (eqArea.getWidth() / 2).reduced (5));
-        eqIECBtn.setBounds (eqArea.reduced (5));
-        
-        // Tape type
-        auto tapeArea = area.removeFromTop (80);
-        auto tape1 = tapeArea.removeFromTop (40);
-        auto tape2 = tapeArea;
-        
-        btnW = tape1.getWidth() / 3;
-        tape406Btn.setBounds (tape1.removeFromLeft (btnW).reduced (5));
-        tape456Btn.setBounds (tape1.removeFromLeft (btnW).reduced (5));
-        tape499Btn.setBounds (tape1.reduced (5));
-        
-        btnW = tape2.getWidth() / 3;
-        tapeGP9Btn.setBounds (tape2.removeFromLeft (btnW).reduced (5));
-        tapeSM900Btn.setBounds (tape2.removeFromLeft (btnW).reduced (5));
-        tapeSM911Btn.setBounds (tape2.reduced (5));
-        
-        // Toggles
-        auto toggleArea = area.removeFromTop (40);
-        transformerBtn.setBounds (toggleArea.removeFromLeft (toggleArea.getWidth() / 2).reduced (10));
-        autoCalBtn.setBounds (toggleArea.reduced (10));
-    }
+    webView->setBounds (getLocalBounds());
 }
 
 void AnalogExactAudioProcessorEditor::timerCallback()
 {
     // Update VU meters
-    vuMeterL.setLevel (audioProcessor.getInputLevelL());
-    vuMeterR.setLevel (audioProcessor.getInputLevelR());
+    float levelL = audioProcessor.getInputLevelL();
+    float levelR = audioProcessor.getInputLevelR();
     
-    // Update knobs from parameter values
-    float inputVal = juce::jmap (inputSlider.getValue(), -12.0, 12.0, 0.0, 1.0);
-    float outputVal = juce::jmap (outputSlider.getValue(), -24.0, 6.0, 0.0, 1.0);
-    float biasVal = juce::jmap (biasSlider.getValue(), -5.0, 5.0, 0.0, 1.0);
+    float dbL = 20.0f * std::log10 (levelL + 1e-9f);
+    float dbR = 20.0f * std::log10 (levelR + 1e-9f);
     
-    inputKnob.setValue (inputVal);
-    outputKnob.setValue (outputVal);
-    biasKnob.setValue (biasVal);
+    juce::String script = juce::String::formatted (
+        "if (typeof updateVUMeters === 'function') updateVUMeters(%f, %f);",
+        dbL, dbR
+    );
+    executeJS (script);
     
-    updateKnobLabels();
+    // Check for parameter changes from plugin (automation, preset load, etc.)
+    updateWebViewParameters();
 }
 
-void AnalogExactAudioProcessorEditor::setupButton (juce::TextButton& button, const juce::String& tooltip)
+void AnalogExactAudioProcessorEditor::executeJS (const juce::String& script)
 {
-    addAndMakeVisible (button);
-    button.setColour (juce::TextButton::buttonColourId, getModuleColour());
-    button.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
-    
-    if (tooltip.isNotEmpty())
-        button.setTooltip (tooltip);
+    if (webView != nullptr)
+    {
+        webView->evaluateJavascript (script);
+    }
 }
 
-void AnalogExactAudioProcessorEditor::updateMonitorButtons()
+void AnalogExactAudioProcessorEditor::setParameterInJS (const juce::String& paramName, float value)
 {
-    auto monitor = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::MONITOR_ID)->load();
-    
-    auto activeCol = getActiveColour();
-    auto inactiveCol = getModuleColour();
-    
-    monitorInputBtn.setColour (juce::TextButton::buttonColourId, monitor == 0 ? activeCol : inactiveCol);
-    monitorReproBtn.setColour (juce::TextButton::buttonColourId, monitor == 1 ? activeCol : inactiveCol);
+    juce::String script = juce::String::formatted (
+        "if (typeof setParameter === 'function') setParameter('%s', %f);",
+        paramName.toRawUTF8(), value
+    );
+    executeJS (script);
 }
 
-void AnalogExactAudioProcessorEditor::updateHeadblockButtons()
+void AnalogExactAudioProcessorEditor::setParameterInJS (const juce::String& paramName, int value)
 {
-    auto headblock = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::HEADBLOCK_ID)->load();
-    
-    auto activeCol = getActiveColour();
-    auto inactiveCol = getModuleColour();
-    
-    headblockStereoBtn.setColour (juce::TextButton::buttonColourId, headblock == 0 ? activeCol : inactiveCol);
-    headblockMonoBtn.setColour (juce::TextButton::buttonColourId, headblock == 1 ? activeCol : inactiveCol);
+    juce::String script = juce::String::formatted (
+        "if (typeof setParameter === 'function') setParameter('%s', %d);",
+        paramName.toRawUTF8(), value
+    );
+    executeJS (script);
 }
 
-void AnalogExactAudioProcessorEditor::updateSpeedButtons()
+void AnalogExactAudioProcessorEditor::setParameterInJS (const juce::String& paramName, bool value)
 {
-    auto speed = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::SPEED_ID)->load();
-    
-    auto activeCol = getActiveColour();
-    auto inactiveCol = getModuleColour();
-    
-    speed75Btn.setColour (juce::TextButton::buttonColourId, speed == 0 ? activeCol : inactiveCol);
-    speed15Btn.setColour (juce::TextButton::buttonColourId, speed == 1 ? activeCol : inactiveCol);
-    speed30Btn.setColour (juce::TextButton::buttonColourId, speed == 2 ? activeCol : inactiveCol);
+    juce::String script = juce::String::formatted (
+        "if (typeof setParameter === 'function') setParameter('%s', %s);",
+        paramName.toRawUTF8(), value ? "true" : "false"
+    );
+    executeJS (script);
 }
 
-void AnalogExactAudioProcessorEditor::updateFluxButtons()
+void AnalogExactAudioProcessorEditor::updateWebViewParameters()
 {
-    auto flux = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::FLUX_ID)->load();
+    // Read current parameter values
+    float inputGain = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::INPUT_GAIN_ID)->load();
+    float outputGain = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::OUTPUT_GAIN_ID)->load();
+    float bias = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::BIAS_ID)->load();
+    int monitor = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::MONITOR_ID)->load();
+    int speed = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::SPEED_ID)->load();
+    int flux = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::FLUX_ID)->load();
+    int eq = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::EQ_ID)->load();
+    int tapeType = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TAPE_TYPE_ID)->load();
+    bool transformer = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TRANSFORMER_ID)->load() > 0.5f;
+    int headblock = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::HEADBLOCK_ID)->load();
+    bool autoCal = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::AUTO_CAL_ID)->load() > 0.5f;
     
-    auto activeCol = getActiveColour();
-    auto inactiveCol = getModuleColour();
+    // Only send updates if values changed
+    if (inputGain != lastInputGain)
+    {
+        setParameterInJS ("inputGain", inputGain);
+        lastInputGain = inputGain;
+    }
     
-    flux185Btn.setColour (juce::TextButton::buttonColourId, flux == 0 ? activeCol : inactiveCol);
-    flux250Btn.setColour (juce::TextButton::buttonColourId, flux == 1 ? activeCol : inactiveCol);
-    flux370Btn.setColour (juce::TextButton::buttonColourId, flux == 2 ? activeCol : inactiveCol);
+    if (outputGain != lastOutputGain)
+    {
+        setParameterInJS ("outputGain", outputGain);
+        lastOutputGain = outputGain;
+    }
+    
+    if (bias != lastBias)
+    {
+        setParameterInJS ("bias", bias);
+        lastBias = bias;
+    }
+    
+    if (monitor != lastMonitor)
+    {
+        setParameterInJS ("monitor", monitor);
+        lastMonitor = monitor;
+    }
+    
+    if (speed != lastSpeed)
+    {
+        setParameterInJS ("speed", speed);
+        lastSpeed = speed;
+    }
+    
+    if (flux != lastFlux)
+    {
+        setParameterInJS ("flux", flux);
+        lastFlux = flux;
+    }
+    
+    if (eq != lastEQ)
+    {
+        setParameterInJS ("eq", eq);
+        lastEQ = eq;
+    }
+    
+    if (tapeType != lastTapeType)
+    {
+        setParameterInJS ("tapeType", tapeType);
+        lastTapeType = tapeType;
+    }
+    
+    if (transformer != lastTransformer)
+    {
+        setParameterInJS ("transformer", transformer);
+        lastTransformer = transformer;
+    }
+    
+    if (headblock != lastHeadblock)
+    {
+        setParameterInJS ("headblock", headblock);
+        lastHeadblock = headblock;
+    }
+    
+    if (autoCal != lastAutoCal)
+    {
+        setParameterInJS ("autoCal", autoCal);
+        lastAutoCal = autoCal;
+    }
 }
 
-void AnalogExactAudioProcessorEditor::updateEQButtons()
+void AnalogExactAudioProcessorEditor::handleWebViewMessage (const juce::String& url)
 {
-    auto eq = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::EQ_ID)->load();
+    // Parse URL like: juceplugin://parameterChanged?id=inputGain&value=5.0
+    juce::URL parsedURL (url);
     
-    auto activeCol = getActiveColour();
-    auto inactiveCol = getModuleColour();
+    auto params = parsedURL.getParameterNames();
+    juce::String paramId, paramValue;
     
-    eqNABBtn.setColour (juce::TextButton::buttonColourId, eq == 0 ? activeCol : inactiveCol);
-    eqIECBtn.setColour (juce::TextButton::buttonColourId, eq == 1 ? activeCol : inactiveCol);
+    for (auto& param : params)
+    {
+        if (param == "id")
+            paramId = parsedURL.getParameterValue (param);
+        else if (param == "value")
+            paramValue = parsedURL.getParameterValue (param);
+    }
+    
+    if (paramId.isEmpty())
+        return;
+    
+    // Update the corresponding parameter
+    if (paramId == "inputGain")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::INPUT_GAIN_ID)->setValueNotifyingHost (paramValue.getFloatValue() / 12.0f * 0.5f + 0.5f);
+    else if (paramId == "outputGain")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::OUTPUT_GAIN_ID)->setValueNotifyingHost ((paramValue.getFloatValue() + 24.0f) / 30.0f);
+    else if (paramId == "bias")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::BIAS_ID)->setValueNotifyingHost (paramValue.getFloatValue() / 10.0f + 0.5f);
+    else if (paramId == "monitor")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::MONITOR_ID)->setValueNotifyingHost (paramValue.getFloatValue());
+    else if (paramId == "speed")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::SPEED_ID)->setValueNotifyingHost (paramValue.getFloatValue() / 2.0f);
+    else if (paramId == "flux")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::FLUX_ID)->setValueNotifyingHost (paramValue.getFloatValue() / 2.0f);
+    else if (paramId == "eq")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::EQ_ID)->setValueNotifyingHost (paramValue.getFloatValue());
+    else if (paramId == "tapeType")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::TAPE_TYPE_ID)->setValueNotifyingHost (paramValue.getFloatValue() / 5.0f);
+    else if (paramId == "transformer")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::TRANSFORMER_ID)->setValueNotifyingHost (paramValue == "true" ? 1.0f : 0.0f);
+    else if (paramId == "headblock")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::HEADBLOCK_ID)->setValueNotifyingHost (paramValue.getFloatValue());
+    else if (paramId == "autoCal")
+        valueTreeState.getParameter (AnalogExactAudioProcessor::AUTO_CAL_ID)->setValueNotifyingHost (paramValue == "true" ? 1.0f : 0.0f);
 }
 
-void AnalogExactAudioProcessorEditor::updateTapeButtons()
+juce::String AnalogExactAudioProcessorEditor::generateHTML()
 {
-    auto tape = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::TAPE_TYPE_ID)->load();
-    
-    auto activeCol = getActiveColour();
-    auto inactiveCol = getModuleColour();
-    
-    tape406Btn.setColour (juce::TextButton::buttonColourId, tape == 0 ? activeCol : inactiveCol);
-    tape456Btn.setColour (juce::TextButton::buttonColourId, tape == 1 ? activeCol : inactiveCol);
-    tape499Btn.setColour (juce::TextButton::buttonColourId, tape == 2 ? activeCol : inactiveCol);
-    tapeGP9Btn.setColour (juce::TextButton::buttonColourId, tape == 3 ? activeCol : inactiveCol);
-    tapeSM900Btn.setColour (juce::TextButton::buttonColourId, tape == 4 ? activeCol : inactiveCol);
-    tapeSM911Btn.setColour (juce::TextButton::buttonColourId, tape == 5 ? activeCol : inactiveCol);
+    return R"(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>ANALOGEXACT</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono&display=swap" rel="stylesheet">
+<style>
+  html,body{height:100%;background:#1a202c;margin:0;padding:0;overflow:hidden}
+  body{font-family:'Inter',sans-serif;color:#e5e7eb}
+  .metal-panel{background:linear-gradient(145deg,#4a5568,#3a4454);border:1px solid #718096;border-top-color:#a0aec0}
+  .module-bg{background:rgba(0,0,0,.2);border:1px solid rgba(0,0,0,.4);box-shadow:inset 0 2px 6px rgba(0,0,0,.4)}
+  .knob{position:relative;width:80px;height:80px;border-radius:50%;background:linear-gradient(145deg,#5a6578,#2d3748);border:2px solid #1a202c;box-shadow:0 5px 10px rgba(0,0,0,.5),inset 0 2px 3px rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;touch-action:none}
+  .knob-ind{position:absolute;width:4px;height:12px;background:#e2e8f0;top:6px;border-radius:2px;transform-origin:center 34px;box-shadow:0 0 3px rgba(255,255,255,.5)}
+  .vu-housing{background:#111827;border:4px solid #4b5563;border-radius:10px;padding:12px;box-shadow:inset 0 0 20px rgba(0,0,0,.8)}
+  .vu-scale{position:relative;width:100%;height:60px;background:#ffebcd;border-radius:4px;overflow:hidden}
+  .vu-needle{position:absolute;width:2px;height:100%;background:#dc2626;bottom:0;left:50%;transform-origin:bottom center;transition:transform .04s linear;box-shadow:0 0 5px #dc2626}
+  .vu-dim{opacity:.35;filter:grayscale(.3)}
+  .switch-group button{background:#374151;color:#e5e7eb;padding:8px 12px;border-radius:6px;border:1px solid #1f2937;font-weight:600;transition:all .15s}
+  .switch-group button.active{background:#f6ad55;color:#1a202c;box-shadow:inset 0 2px 4px rgba(0,0,0,.4)}
+  .lamp{width:10px;height:10px;border-radius:50%;background:#374151;box-shadow:inset 0 0 3px rgba(0,0,0,.8)}
+  .lamp.on.green{background:#34d399;box-shadow:0 0 6px #34d399}
+  .lamp.on.red{background:#f87171;box-shadow:0 0 6px #f87171}
+  #tech-panel{max-height:0;opacity:0;overflow:hidden;transition:max-height .5s ease,opacity .4s ease}
+  #tech-panel.open{max-height:600px;opacity:1}
+  .toggle-switch{display:inline-block;width:50px;height:26px;background:#4a5568;border-radius:13px;cursor:pointer;position:relative;border:1px solid #1a202c;transition:background .2s}
+  .toggle-switch.active{background:#f6ad55}
+  .toggle-switch-handle{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:transform .2s}
+  .toggle-switch.active .toggle-switch-handle{transform:translateX(24px)}
+</style>
+</head>
+<body>
+  <div class="metal-panel rounded-2xl p-4 w-full h-full flex flex-col" style="max-width:900px;margin:0 auto">
+    <div class="flex justify-between items-center pb-3 border-b border-black/30">
+      <div>
+        <h1 class="text-2xl font-bold text-white tracking-wider">ANALOGEXACT</h1>
+        <p class="text-xs text-gray-400">INPUT monitor = true hard bypass • Non-linear core @ 768 kHz (120 taps)</p>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 gap-3 mt-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div id="vuLwrap" class="vu-housing">
+          <div class="flex items-center justify-between text-xs mb-1">
+            <span id="vuLabelL" class="text-gray-300">VU - L</span>
+            <span class="text-gray-500">-20  -10   0   +3  +5</span>
+          </div>
+          <div class="vu-scale"><div id="vuL" class="vu-needle" style="transform:rotate(-70deg)"></div></div>
+        </div>
+        <div id="vuRwrap" class="vu-housing">
+          <div class="flex items-center justify-between text-xs mb-1">
+            <span id="vuLabelR" class="text-gray-300">VU - R</span>
+            <span class="text-gray-500">-20  -10   0   +3  +5</span>
+          </div>
+          <div class="vu-scale"><div id="vuR" class="vu-needle" style="transform:rotate(-70deg)"></div></div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3 px-2">
+        <div class="flex items-center gap-2">
+          <div id="lamp-ready" class="lamp on green"></div><span class="text-xs">READY</span>
+          <div id="lamp-play" class="lamp"></div><span class="text-xs">PLAY</span>
+          <div id="lamp-stop" class="lamp on red"></div><span class="text-xs">STOP</span>
+        </div>
+        <div class="flex items-center gap-2 pl-4 border-l border-black/30">
+          <div id="lamp-ch1" class="lamp on green"></div><span class="text-xs">CH-1</span>
+          <div id="lamp-ch2" class="lamp on green"></div><span class="text-xs">CH-2</span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-4">
+        <div class="module-bg p-4 rounded-lg flex flex-col items-center gap-2">
+          <h2 class="text-sm font-bold">INPUT LEVEL</h2>
+          <div class="knob" id="knob-in"><div class="knob-ind"></div></div>
+          <span id="val-in" class="font-mono text-xs text-yellow-300">0.0 dB</span>
+        </div>
+        <div class="module-bg p-4 rounded-lg flex flex-col items-center gap-2">
+          <h2 class="text-sm font-bold">OUTPUT LEVEL</h2>
+          <div class="knob" id="knob-out"><div class="knob-ind"></div></div>
+          <span id="val-out" class="font-mono text-xs text-yellow-300">0.0 dB</span>
+        </div>
+        <div class="module-bg p-4 rounded-lg flex flex-col items-center gap-2">
+          <h2 class="text-sm font-bold">BIAS ADJUST</h2>
+          <div class="knob" id="knob-bias"><div class="knob-ind"></div></div>
+          <span id="val-bias" class="font-mono text-xs text-yellow-300">0.0 dB</span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div class="module-bg p-4 rounded-lg">
+          <h2 class="text-sm font-bold mb-2 text-center">MONITOR</h2>
+          <div id="monitor" class="switch-group flex gap-1">
+            <button data-monitor="0" class="flex-1 active">INPUT</button>
+            <button data-monitor="1" class="flex-1">REPRO</button>
+          </div>
+        </div>
+        <div class="module-bg p-4 rounded-lg">
+          <h2 class="text-sm font-bold mb-2 text-center">HEADBLOCK</h2>
+          <div id="headblock" class="switch-group flex gap-1">
+            <button data-headblock="0" class="flex-1 active">STEREO</button>
+            <button data-headblock="1" class="flex-1">MONO</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="text-center pt-2">
+      <button id="toggle-tech" class="text-yellow-400 hover:text-yellow-300 font-semibold text-xs">Technician's Setup Panel ▼</button>
+    </div>
+
+    <div id="tech-panel" class="module-bg rounded-lg p-3 mt-2">
+      <div class="grid grid-cols-3 gap-3 text-xs">
+        <div>
+          <label class="font-semibold block mb-1 text-center">SPEED (IPS)</label>
+          <div id="speed" class="switch-group flex gap-1">
+            <button data-speed="0">7.5</button>
+            <button data-speed="1" class="active">15</button>
+            <button data-speed="2">30</button>
+          </div>
+        </div>
+        <div>
+          <label class="font-semibold block mb-1 text-center">FLUX (nWb/m)</label>
+          <div id="flux" class="switch-group flex gap-1">
+            <button data-flux="0">185</button>
+            <button data-flux="1" class="active">250</button>
+            <button data-flux="2">370</button>
+          </div>
+        </div>
+        <div>
+          <label class="font-semibold block mb-1 text-center">EQ</label>
+          <div id="eq" class="switch-group flex gap-1">
+            <button data-eq="0" class="active">NAB</button>
+            <button data-eq="1">IEC</button>
+          </div>
+        </div>
+      </div>
+      <div class="mt-3">
+        <label class="font-semibold block mb-1 text-center text-xs">TAPE TYPE</label>
+        <div id="tape" class="switch-group grid grid-cols-3 gap-1">
+          <button data-tapetype="0">406</button>
+          <button data-tapetype="1" class="active">456</button>
+          <button data-tapetype="2">499</button>
+          <button data-tapetype="3">GP9</button>
+          <button data-tapetype="4">SM900</button>
+          <button data-tapetype="5">SM911</button>
+        </div>
+      </div>
+      <div class="flex gap-3 mt-3 items-center justify-center">
+        <div class="flex items-center gap-2">
+          <div id="transformer" class="toggle-switch active"><div class="toggle-switch-handle"></div></div>
+          <span class="text-xs font-semibold">Transformer I/O</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <div id="autocal" class="toggle-switch active"><div class="toggle-switch-handle"></div></div>
+          <span class="text-xs font-semibold">Auto Cal</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(()=>{'use strict';
+const $=id=>document.getElementById(id);
+
+// State
+const state = {
+  inDb:0, outDb:0, bias:0, monitor:0, speed:1, flux:1, eq:0, tapeType:1, 
+  transformer:true, headblock:0, autoCal:true
+};
+
+// Knobs
+function makeKnob(knobId,valId,key,min,max,fmt){
+  const el=$(knobId), ind=el.querySelector('.knob-ind'), val=$(valId);
+  let dragging=false,startY=0,startVal=0;
+  
+  function setVal(v){
+    const c=Math.min(max,Math.max(min,v));
+    state[key]=Math.round(c*10)/10;
+    const pct=(state[key]-min)/(max-min);
+    ind.style.transform=`rotate(${270*pct-135}deg)`;
+    val.textContent=fmt(state[key]);
+    // Send to C++
+    window.sendParameterToPlugin && window.sendParameterToPlugin(key, state[key]);
+  }
+  
+  setVal(state[key]||0);
+  el.addEventListener('pointerdown',e=>{ dragging=true; startY=e.clientY; startVal=state[key]; e.preventDefault(); });
+  el.addEventListener('pointermove',e=>{ if(!dragging)return; const dy=startY-e.clientY; setVal(startVal+(dy/150)*(max-min)); });
+  const end=()=>{ dragging=false; };
+  el.addEventListener('pointerup',end); 
+  el.addEventListener('pointercancel',end);
+  el.addEventListener('wheel',e=>{ e.preventDefault(); const step=(max-min)/100; setVal(state[key]+(e.deltaY<0?step:-step)); },{passive:false});
+  
+  return setVal;
 }
 
-void AnalogExactAudioProcessorEditor::updateKnobLabels()
-{
-    inputLabel.setText (juce::String (inputSlider.getValue(), 1) + " dB", juce::dontSendNotification);
-    outputLabel.setText (juce::String (outputSlider.getValue(), 1) + " dB", juce::dontSendNotification);
-    biasLabel.setText (juce::String (biasSlider.getValue(), 1) + " dB", juce::dontSendNotification);
+const setInput = makeKnob('knob-in','val-in','inDb',-12,12,v=>`${v.toFixed(1)} dB`);
+const setOutput = makeKnob('knob-out','val-out','outDb',-24,6,v=>`${v.toFixed(1)} dB`);
+const setBias = makeKnob('knob-bias','val-bias','bias',-5,5,v=>`${v.toFixed(1)} dB`);
+
+// Buttons
+function setupButtonGroup(groupId,key){
+  const group=$(groupId);
+  group.addEventListener('click',(e)=>{
+    if(e.target.tagName!=='BUTTON')return;
+    const val=parseInt(e.target.dataset[key]);
+    state[key]=val;
+    group.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+    e.target.classList.add('active');
+    window.sendParameterToPlugin && window.sendParameterToPlugin(key, val);
+    updateChannelLamps();
+  });
+}
+
+setupButtonGroup('monitor','monitor');
+setupButtonGroup('headblock','headblock');
+setupButtonGroup('speed','speed');
+setupButtonGroup('flux','flux');
+setupButtonGroup('eq','eq');
+setupButtonGroup('tape','tapetype');
+
+// Toggles
+function setupToggle(id,key){
+  const el=$(id);
+  el.addEventListener('click',()=>{
+    state[key]=!state[key];
+    el.classList.toggle('active',state[key]);
+    window.sendParameterToPlugin && window.sendParameterToPlugin(key, state[key]);
+  });
+}
+
+setupToggle('transformer','transformer');
+setupToggle('autocal','autoCal');
+
+// Tech panel
+$('toggle-tech').addEventListener('click',()=>{
+  const panel=$('tech-panel');
+  const open=panel.classList.contains('open');
+  if(open){
+    panel.classList.remove('open');
+    $('toggle-tech').textContent="Technician's Setup Panel ▼";
+  }else{
+    panel.classList.add('open');
+    $('toggle-tech').textContent="Technician's Setup Panel ▲";
+  }
+});
+
+// VU meter update from C++
+window.updateVUMeters = function(dbL, dbR) {
+  const needle=db=>Math.max(-70,Math.min(20,(db+50)*2.25-70));
+  $('vuL').style.transform=`rotate(${needle(dbL)}deg)`;
+  $('vuR').style.transform=`rotate(${needle(dbR)}deg)`;
+};
+
+// Parameter updates from C++ (automation, preset load)
+window.setParameter = function(name, value) {
+  if(name==='inputGain'){ setInput(value); }
+  else if(name==='outputGain'){ setOutput(value); }
+  else if(name==='bias'){ setBias(value); }
+  else if(name==='monitor'){
+    state.monitor=value;
+    $('monitor').querySelectorAll('button').forEach(b=>{
+      b.classList.toggle('active',parseInt(b.dataset.monitor)===value);
+    });
+  }
+  else if(name==='speed'){
+    state.speed=value;
+    $('speed').querySelectorAll('button').forEach(b=>{
+      b.classList.toggle('active',parseInt(b.dataset.speed)===value);
+    });
+  }
+  else if(name==='flux'){
+    state.flux=value;
+    $('flux').querySelectorAll('button').forEach(b=>{
+      b.classList.toggle('active',parseInt(b.dataset.flux)===value);
+    });
+  }
+  else if(name==='eq'){
+    state.eq=value;
+    $('eq').querySelectorAll('button').forEach(b=>{
+      b.classList.toggle('active',parseInt(b.dataset.eq)===value);
+    });
+  }
+  else if(name==='tapeType'){
+    state.tapeType=value;
+    $('tape').querySelectorAll('button').forEach(b=>{
+      b.classList.toggle('active',parseInt(b.dataset.tapetype)===value);
+    });
+  }
+  else if(name==='transformer'){
+    state.transformer=value;
+    $('transformer').classList.toggle('active',value);
+  }
+  else if(name==='headblock'){
+    state.headblock=value;
+    $('headblock').querySelectorAll('button').forEach(b=>{
+      b.classList.toggle('active',parseInt(b.dataset.headblock)===value);
+    });
+    updateChannelLamps();
+  }
+  else if(name==='autoCal'){
+    state.autoCal=value;
+    $('autocal').classList.toggle('active',value);
+  }
+};
+
+function updateChannelLamps(){
+  const isMono=(state.headblock===1);
+  $('lamp-ch2').classList.toggle('on',!isMono);
+  $('lamp-ch2').classList.toggle('green',!isMono);
+  $('vuRwrap').classList.toggle('vu-dim',isMono);
+  $('vuLabelR').textContent=isMono?'VU - R (idle)':'VU - R';
+}
+
+updateChannelLamps();
+
+// Send UI changes to C++ plugin
+window.sendParameterToPlugin = function(key, value) {
+  // This will be called when UI changes, need to notify JUCE
+  const paramMap = {
+    'inDb': 'inputGain',
+    'outDb': 'outputGain',
+    'bias': 'bias',
+    'monitor': 'monitor',
+    'speed': 'speed',
+    'flux': 'flux',
+    'eq': 'eq',
+    'tapetype': 'tapeType',
+    'transformer': 'transformer',
+    'headblock': 'headblock',
+    'autoCal': 'autoCal'
+  };
+  
+  const paramId = paramMap[key];
+  if (paramId && window.juce) {
+    window.juce.parameterChanged(paramId, value);
+  }
+};
+
+})();
+</script>
+</body>
+</html>
+)";
 }
