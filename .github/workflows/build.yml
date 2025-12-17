@@ -1,0 +1,65 @@
+name: Build AnalogExact
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get JUCE
+        run: |
+          git clone --depth 1 --branch 7.0.9 https://github.com/juce-framework/JUCE.git JUCE
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: |
+          mkdir -p artifacts
+          ditto -c -k --sequesterRsrc --keepParent "build/AnalogExact_artefacts/Release/VST3/AnalogExact.vst3" "artifacts/AnalogExact-macOS-VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/AnalogExact_artefacts/Release/AU/AnalogExact.component" "artifacts/AnalogExact-macOS-AU.zip"
+          if [ -d "build/AnalogExact_artefacts/Release/Standalone/AnalogExact.app" ]; then
+            ditto -c -k --sequesterRsrc --keepParent "build/AnalogExact_artefacts/Release/Standalone/AnalogExact.app" "artifacts/AnalogExact-macOS-Standalone.zip"
+          fi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnalogExact-macOS
+          path: artifacts/*.zip
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get JUCE
+        run: git clone --depth 1 --branch 7.0.9 https://github.com/juce-framework/JUCE.git JUCE
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Compress-Archive -Path "build\AnalogExact_artefacts\Release\VST3\AnalogExact.vst3" -DestinationPath "artifacts\AnalogExact-windows-VST3.zip"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnalogExact-Windows
+          path: artifacts/*.zip
