@@ -6,7 +6,7 @@ project(ANALOGEXACT VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Add JUCE
+# Add JUCE (repo contains JUCE/ populated by your workflow)
 add_subdirectory(JUCE)
 
 # Plugin formats to build
@@ -30,7 +30,7 @@ juce_add_plugin(AnalogExact
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
 
-    # IMPORTANT for GitHub Actions / online builds
+    # CI-safe (don’t copy into system plugin folders on GitHub runners)
     COPY_PLUGIN_AFTER_BUILD FALSE
 
     # VST3 settings
@@ -41,9 +41,12 @@ juce_add_plugin(AnalogExact
 
     # Plugin description
     DESCRIPTION "Analog Tape Machine Emulation"
+
+    # Needed for WebView on Windows (JUCE 8)
+    NEEDS_WEBVIEW2 TRUE
 )
 
-# This is the key fix for: 'JuceHeader.h' file not found
+# Needed if your code uses: #include <JuceHeader.h>
 juce_generate_juce_header(AnalogExact)
 
 # Source files
@@ -53,10 +56,16 @@ target_sources(AnalogExact
         Source/PluginEditor.cpp
 )
 
-# JUCE modules / definitions
+# JUCE compile definitions
 target_compile_definitions(AnalogExact
     PUBLIC
-        JUCE_WEB_BROWSER=0
+        # Web UI needs this ON
+        JUCE_WEB_BROWSER=1
+
+        # Recommended for JUCE 8 WebView2 static loader on Windows
+        JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
+
+        # Your existing flags
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
         JUCE_DISPLAY_SPLASH_SCREEN=0
@@ -68,6 +77,7 @@ target_link_libraries(AnalogExact
         juce::juce_audio_utils
         juce::juce_audio_processors
         juce::juce_dsp
+        # WebBrowserComponent/WebView lives here
         juce::juce_gui_extra
     PUBLIC
         juce::juce_recommended_config_flags
