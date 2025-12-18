@@ -1,67 +1,80 @@
-name: Build VST3
+cmake_minimum_required(VERSION 3.22)
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+project(ANALOGEXACT VERSION 1.0.0)
 
-jobs:
-  build-macos:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup CMake
-      uses: jwlawson/actions-setup-cmake@v2
-      with:
-        cmake-version: '3.26'
-    
-    - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-    
-    - name: Build
-      run: cmake --build build --config Release
-    
-    - name: Upload macOS VST3
-      uses: actions/upload-artifact@v4
-      with:
-        name: AnalogExact-macOS-VST3
-        path: build/AnalogExact_artefacts/Release/VST3/*.vst3
-        
-    - name: Upload macOS AU
-      uses: actions/upload-artifact@v4
-      with:
-        name: AnalogExact-macOS-AU
-        path: build/AnalogExact_artefacts/Release/AU/*.component
-        if-no-files-found: ignore
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-  build-windows:
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup CMake
-      uses: jwlawson/actions-setup-cmake@v2
-      with:
-        cmake-version: '3.26'
-        
-    - name: Install WebView2
-      shell: powershell
-      run: |
-        # WebView2 is included in Windows 11 and recent Windows 10
-        # For build purposes, we need the development package
-        nuget install Microsoft.Web.WebView2 -Version 1.0.2210.55 -OutputDirectory packages
-        
-    - name: Configure CMake
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64
+# Fetch JUCE
+include(FetchContent)
+FetchContent_Declare(
+    JUCE
+    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG 7.0.9
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(JUCE)
 
-    - name: Build
-      run: cmake --build build --config Release
+# Plugin formats
+set(FORMATS VST3 AU Standalone)
+
+# Create the plugin target
+juce_add_plugin(AnalogExact
+    COMPANY_NAME "AnalogExact"
+    PLUGIN_MANUFACTURER_CODE Anex
+    PLUGIN_CODE Aexc
+    FORMATS ${FORMATS}
+    PRODUCT_NAME "AnalogExact"
     
-    - name: Upload Windows VST3
-      uses: actions/upload-artifact@v4
-      with:
-        name: AnalogExact-Windows-VST3
-        path: build/AnalogExact_artefacts/Release/VST3/*.vst3
+    BUNDLE_ID com.analogexact.tapemachine
+    
+    IS_SYNTH FALSE
+    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+    
+    COPY_PLUGIN_AFTER_BUILD TRUE
+    
+    VST3_CATEGORIES "Fx"
+    AU_MAIN_TYPE kAudioUnitType_Effect
+    
+    # CRITICAL: Enable WebView2 for Windows
+    NEEDS_WEBVIEW2 TRUE
+)
+
+# Source files
+target_sources(AnalogExact
+    PRIVATE
+        Source/PluginProcessor.cpp
+        Source/PluginEditor.cpp
+)
+
+# JUCE compile definitions
+target_compile_definitions(AnalogExact
+    PUBLIC
+        JUCE_WEB_BROWSER=1
+        JUCE_USE_WIN_WEBVIEW2=1
+        JUCE_VST3_CAN_REPLACE_VST2=0
+        JUCE_DISPLAY_SPLASH_SCREEN=0
+        JUCE_REPORT_APP_USAGE=0
+        JUCE_USE_CURL=0
+)
+
+# Link JUCE modules - MUST include juce_gui_extra for WebBrowserComponent
+target_link_libraries(AnalogExact
+    PRIVATE
+        juce::juce_audio_utils
+        juce::juce_audio_processors
+        juce::juce_dsp
+        juce::juce_gui_extra
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags
+)
+
+target_include_directories(AnalogExact
+    PRIVATE
+        Source
+)
