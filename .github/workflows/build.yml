@@ -18,22 +18,32 @@ jobs:
       with:
         cmake-version: '3.26'
     
-    - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+    - name: Configure CMake (Universal Binary)
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
     
     - name: Build
       run: cmake --build build --config Release -j4
     
+    - name: Verify Universal Binary
+      run: |
+        echo "Checking architectures..."
+        file build/AnalogExact_artefacts/Release/VST3/AnalogExact.vst3/Contents/MacOS/AnalogExact || true
+        lipo -info build/AnalogExact_artefacts/Release/VST3/AnalogExact.vst3/Contents/MacOS/AnalogExact || true
+    
     - name: Upload macOS VST3
       uses: actions/upload-artifact@v4
       with:
-        name: AnalogExact-macOS-VST3
+        name: AnalogExact-macOS-VST3-Universal
         path: build/AnalogExact_artefacts/Release/VST3/*.vst3
         
     - name: Upload macOS AU
       uses: actions/upload-artifact@v4
       with:
-        name: AnalogExact-macOS-AU
+        name: AnalogExact-macOS-AU-Universal
         path: build/AnalogExact_artefacts/Release/AU/*.component
         if-no-files-found: ignore
 
