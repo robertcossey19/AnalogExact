@@ -1,108 +1,103 @@
-name: Build AnalogExact
+name: Build Plugin
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  macos-universal:
-    name: macOS Universal (VST3/AU/Standalone)
-    runs-on: macos-14
-
+  build-windows:
+    runs-on: windows-latest
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+    
+    - name: Install WebView2
+      shell: powershell
+      run: |
+        # Register NuGet source
+        Register-PackageSource -ProviderName NuGet -Name nugetRepository -Location https://www.nuget.org/api/v2 -Force -ErrorAction SilentlyContinue
+        
+        # Install WebView2 package
+        Install-Package Microsoft.Web.WebView2 -Source nugetRepository -Scope CurrentUser -RequiredVersion 1.0.1901.177 -Force -SkipDependencies
+        
+        # Verify installation
+        $webview2Path = "$env:USERPROFILE\.nuget\packages\microsoft.web.webview2"
+        if (Test-Path $webview2Path) {
+          Write-Host "WebView2 installed successfully at: $webview2Path"
+          Get-ChildItem $webview2Path -Recurse -Depth 2
+        } else {
+          Write-Error "WebView2 installation failed"
+          exit 1
+        }
+    
+    - name: Configure CMake
+      run: |
+        cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DJUCE_WEBVIEW2_PACKAGE_LOCATION="$env:USERPROFILE\.nuget\packages"
+    
+    - name: Build
+      run: cmake --build build --config Release
+    
+    - name: Upload Windows VST3
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnalogExact-Windows-VST3
+        path: build/AnalogExact_artefacts/Release/VST3/AnalogExact.vst3
 
-      - name: Get JUCE (JUCE 8 for WebView)
-        run: |
-          rm -rf JUCE
-          git clone --depth 1 --branch 8.0.9 https://github.com/juce-framework/JUCE.git JUCE
-
-      - name: Configure (Universal)
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
-
-      - name: Build
-        run: |
-          cmake --build build --config Release
-
-      - name: Package Artifacts
-        run: |
-          set -e
-          mkdir -p artifacts
-
-          VST3_PATH="$(find build -type d -path "*_artefacts/Release/VST3/*.vst3" -maxdepth 8 | head -n 1)"
-          AU_PATH="$(find build -type d -path "*_artefacts/Release/AU/*.component" -maxdepth 8 | head -n 1)"
-          APP_PATH="$(find build -type d -path "*_artefacts/Release/Standalone/*.app" -maxdepth 8 | head -n 1)"
-
-          echo "VST3: $VST3_PATH"
-          echo "AU:   $AU_PATH"
-          echo "APP:  $APP_PATH"
-
-          if [ -n "$VST3_PATH" ]; then
-            ditto -c -k --sequesterRsrc --keepParent "$VST3_PATH" "artifacts/AnalogExact-macOS-Universal-VST3.zip"
-          fi
-
-          if [ -n "$AU_PATH" ]; then
-            ditto -c -k --sequesterRsrc --keepParent "$AU_PATH" "artifacts/AnalogExact-macOS-Universal-AU.zip"
-          fi
-
-          if [ -n "$APP_PATH" ]; then
-            ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "artifacts/AnalogExact-macOS-Universal-Standalone.zip"
-          fi
-
-          ls -la artifacts
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnalogExact-macOS-Universal
-          path: artifacts/*.zip
-
-  windows:
-    name: Windows (VST3 x64)
-    runs-on: windows-2022
-
+  build-macos:
+    runs-on: macos-latest
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Get JUCE (JUCE 8 for WebView)
-        run: |
-          if (Test-Path JUCE) { Remove-Item -Recurse -Force JUCE }
-          git clone --depth 1 --branch 8.0.9 https://github.com/juce-framework/JUCE.git JUCE
-
-      - name: Configure
-        run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-
-      - name: Build
-        run: |
-          cmake --build build --config Release
-
-      - name: Package Artifacts
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-
-          $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter *.vst3 |
-                 Where-Object { $_.FullName -match "_artefacts\\Release\\VST3" } |
-                 Select-Object -First 1
-
-          if ($null -eq $vst3) {
-            Write-Host "No VST3 found!"
-            exit 1
-          }
-
-          Write-Host "VST3: $($vst3.FullName)"
-          Compress-Archive -Path $vst3.FullName -DestinationPath "artifacts\AnalogExact-windows-VST3.zip" -Force
-          Get-ChildItem artifacts
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnalogExact-Windows
-          path: artifacts/*.zip
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Setup Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+    
+    - name: Configure CMake (Universal Binary)
+      run: |
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+    
+    - name: Build
+      run: cmake --build build --config Release
+    
+    - name: Verify Universal Binary
+      run: |
+        echo "Checking VST3 architectures..."
+        lipo -info build/AnalogExact_artefacts/Release/VST3/AnalogExact.vst3/Contents/MacOS/AnalogExact || true
+        
+        echo "Checking AU architectures..."
+        lipo -info build/AnalogExact_artefacts/Release/AU/AnalogExact.component/Contents/MacOS/AnalogExact || true
+    
+    - name: Upload macOS VST3
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnalogExact-macOS-VST3
+        path: build/AnalogExact_artefacts/Release/VST3/AnalogExact.vst3
+    
+    - name: Upload macOS AU
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnalogExact-macOS-AU
+        path: build/AnalogExact_artefacts/Release/AU/AnalogExact.component
+    
+    - name: Upload Standalone
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnalogExact-macOS-Standalone
+        path: build/AnalogExact_artefacts/Release/Standalone/AnalogExact.app
