@@ -3,73 +3,44 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 
-//==============================================================================
-class AnalogExactAudioProcessorEditor : public juce::AudioProcessorEditor,
-                                        public juce::Timer
+class AnalogExactAudioProcessorEditor : public juce::AudioProcessorEditor
 {
 public:
-    AnalogExactAudioProcessorEditor (AnalogExactAudioProcessor&, 
-                                     juce::AudioProcessorValueTreeState&);
+    AnalogExactAudioProcessorEditor(AnalogExactAudioProcessor&, juce::AudioProcessorValueTreeState&);
     ~AnalogExactAudioProcessorEditor() override;
 
-    void paint (juce::Graphics&) override;
+    void paint(juce::Graphics&) override;
     void resized() override;
-    void timerCallback() override;
 
 private:
     AnalogExactAudioProcessor& audioProcessor;
     juce::AudioProcessorValueTreeState& valueTreeState;
-    
-    // WebView component with custom handler
-    class CustomWebView : public juce::WebBrowserComponent
-    {
-    public:
-        CustomWebView (AnalogExactAudioProcessorEditor& ed) : editor (ed) {}
-        
-        bool pageAboutToLoad (const juce::String& newURL) override
-        {
-            // Intercept custom protocol for parameter changes
-            if (newURL.startsWith ("juceplugin://"))
-            {
-                editor.handleWebViewMessage (newURL);
-                return false; // Don't actually navigate
-            }
-            return true;
-        }
-        
-    private:
-        AnalogExactAudioProcessorEditor& editor;
-    };
-    
-    std::unique_ptr<CustomWebView> webView;
-    
-    // Track last sent values to avoid redundant updates
-    float lastInputGain = 0.0f;
-    float lastOutputGain = 0.0f;
-    float lastBias = 0.0f;
-    int lastMonitor = -1;
-    int lastSpeed = -1;
-    int lastFlux = -1;
-    int lastEQ = -1;
-    int lastTapeType = -1;
-    bool lastTransformer = true;
-    int lastHeadblock = -1;
-    bool lastAutoCal = true;
-    
-    // Generate the HTML UI
-    juce::String generateHTML();
-    
-    // Send parameter updates to WebView
-    void updateWebViewParameters();
-    
-    // JavaScript bridge functions
-    void executeJS (const juce::String& script);
-    void setParameterInJS (const juce::String& paramName, float value);
-    void setParameterInJS (const juce::String& paramName, int value);
-    void setParameterInJS (const juce::String& paramName, bool value);
-    
-    // Handle messages from WebView
-    void handleWebViewMessage (const juce::String& url);
-    
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AnalogExactAudioProcessorEditor)
+
+    // Sliders - using unique_ptr to ensure proper initialization
+    std::unique_ptr<juce::Slider> warmthSlider;
+    std::unique_ptr<juce::Slider> bitDepthSlider;
+    std::unique_ptr<juce::Slider> saturationSlider;
+    std::unique_ptr<juce::Slider> noiseSlider;
+    std::unique_ptr<juce::Slider> dryWetSlider;
+
+    // Labels
+    std::unique_ptr<juce::Label> warmthLabel;
+    std::unique_ptr<juce::Label> bitDepthLabel;
+    std::unique_ptr<juce::Label> saturationLabel;
+    std::unique_ptr<juce::Label> noiseLabel;
+    std::unique_ptr<juce::Label> dryWetLabel;
+
+    // Attachments
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> warmthAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bitDepthAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> saturationAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> noiseAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> dryWetAttachment;
+
+    void setupSlider(std::unique_ptr<juce::Slider>& slider,
+                     std::unique_ptr<juce::Label>& label,
+                     const juce::String& labelText,
+                     const juce::String& parameterID);
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AnalogExactAudioProcessorEditor)
 };
