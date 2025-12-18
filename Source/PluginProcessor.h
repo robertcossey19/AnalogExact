@@ -1,6 +1,7 @@
 #pragma once
 
-#include <JuceHeader.h>
+#include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_dsp/juce_dsp.h>
 
 //==============================================================================
 class AnalogExactAudioProcessor : public juce::AudioProcessor
@@ -58,6 +59,9 @@ public:
     // VU meter access
     float getInputLevelL() const { return inputLevelL.load(); }
     float getInputLevelR() const { return inputLevelR.load(); }
+    
+    // Parameter tree
+    juce::AudioProcessorValueTreeState& getValueTreeState() { return parameters; }
 
 private:
     //==============================================================================
