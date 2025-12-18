@@ -1,55 +1,67 @@
-cmake_minimum_required(VERSION 3.15)
-project(ANALOGEXACT VERSION 1.0.0)
+name: Build VST3
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
-add_subdirectory(JUCE)
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '3.26'
+    
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+    
+    - name: Build
+      run: cmake --build build --config Release
+    
+    - name: Upload macOS VST3
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnalogExact-macOS-VST3
+        path: build/AnalogExact_artefacts/Release/VST3/*.vst3
+        
+    - name: Upload macOS AU
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnalogExact-macOS-AU
+        path: build/AnalogExact_artefacts/Release/AU/*.component
+        if-no-files-found: ignore
 
-set(FORMATS VST3 AU Standalone)
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '3.26'
+        
+    - name: Install WebView2
+      shell: powershell
+      run: |
+        # WebView2 is included in Windows 11 and recent Windows 10
+        # For build purposes, we need the development package
+        nuget install Microsoft.Web.WebView2 -Version 1.0.2210.55 -OutputDirectory packages
+        
+    - name: Configure CMake
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64
 
-juce_add_plugin(AnalogExact
-    COMPANY_NAME "YourCompany"
-    PLUGIN_MANUFACTURER_CODE Yoco
-    PLUGIN_CODE Anex
-    FORMATS ${FORMATS}
-    PRODUCT_NAME "AnalogExact"
-    BUNDLE_ID com.yourcompany.analogexact
-
-    IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT FALSE
-    NEEDS_MIDI_OUTPUT FALSE
-    IS_MIDI_EFFECT FALSE
-    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-
-    COPY_PLUGIN_AFTER_BUILD FALSE
-
-    VST3_CATEGORIES "Fx"
-    AU_MAIN_TYPE kAudioUnitType_Effect
-    DESCRIPTION "Analog Tape Machine Emulation"
-
-    NEEDS_WEBVIEW2 TRUE
-)
-
-juce_generate_juce_header(AnalogExact)
-
-target_sources(AnalogExact PRIVATE
-    Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp
-)
-
-target_compile_definitions(AnalogExact PUBLIC
-    JUCE_WEB_BROWSER=1
-    JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
-    JUCE_USE_CURL=0
-    JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_DISPLAY_SPLASH_SCREEN=0
-    JUCE_REPORT_APP_USAGE=0
-)
-
-target_link_libraries(AnalogExact PRIVATE
-    juce::juce_audio_utils
-    juce::juce_audio_processors
-    juce::juce_dsp
-    juce::juce_gui_extra
-)
+    - name: Build
+      run: cmake --build build --config Release
+    
+    - name: Upload Windows VST3
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnalogExact-Windows-VST3
+        path: build/AnalogExact_artefacts/Release/VST3/*.vst3
