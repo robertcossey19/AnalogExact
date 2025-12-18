@@ -5,20 +5,43 @@ project(ANALOGEXACT VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Fetch JUCE
+# Suppress deprecation warnings on macOS
+if(APPLE)
+    add_compile_options(-Wno-deprecated-declarations)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+endif()
+
+# Fetch JUCE 8.0.4 for macOS 15 compatibility
 include(FetchContent)
 FetchContent_Declare(
     JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG 7.0.9
+    GIT_TAG 8.0.4
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(JUCE)
 
-# Plugin formats
-set(FORMATS VST3 AU Standalone)
+# On Windows, download WebView2 SDK
+if(WIN32)
+    FetchContent_Declare(
+        WebView2
+        URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2210.55
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(WebView2)
+    
+    # Tell JUCE where to find WebView2
+    set(JUCE_WEBVIEW2_SDK_LOCATION "${webview2_SOURCE_DIR}/build/native" CACHE PATH "WebView2 SDK location")
+endif()
 
-# Create the plugin target
+# Plugin formats
+if(APPLE)
+    set(FORMATS VST3 AU Standalone)
+else()
+    set(FORMATS VST3 Standalone)
+endif()
+
+# Create the plugin
 juce_add_plugin(AnalogExact
     COMPANY_NAME "AnalogExact"
     PLUGIN_MANUFACTURER_CODE Anex
@@ -39,9 +62,11 @@ juce_add_plugin(AnalogExact
     VST3_CATEGORIES "Fx"
     AU_MAIN_TYPE kAudioUnitType_Effect
     
-    # CRITICAL: Enable WebView2 for Windows
     NEEDS_WEBVIEW2 TRUE
 )
+
+# Generate the JuceHeader.h file
+juce_generate_juce_header(AnalogExact)
 
 # Source files
 target_sources(AnalogExact
@@ -50,7 +75,7 @@ target_sources(AnalogExact
         Source/PluginEditor.cpp
 )
 
-# JUCE compile definitions
+# Compile definitions
 target_compile_definitions(AnalogExact
     PUBLIC
         JUCE_WEB_BROWSER=1
@@ -61,7 +86,7 @@ target_compile_definitions(AnalogExact
         JUCE_USE_CURL=0
 )
 
-# Link JUCE modules - MUST include juce_gui_extra for WebBrowserComponent
+# Link JUCE modules
 target_link_libraries(AnalogExact
     PRIVATE
         juce::juce_audio_utils
