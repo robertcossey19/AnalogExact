@@ -1,15 +1,14 @@
 #pragma once
 
-#include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include <juce_gui_extra/juce_gui_extra.h>
 
 //==============================================================================
 class AnalogExactAudioProcessorEditor : public juce::AudioProcessorEditor,
                                         public juce::Timer
 {
 public:
-    AnalogExactAudioProcessorEditor (AnalogExactAudioProcessor&, 
-                                     juce::AudioProcessorValueTreeState&);
+    AnalogExactAudioProcessorEditor (AnalogExactAudioProcessor&);
     ~AnalogExactAudioProcessorEditor() override;
 
     void paint (juce::Graphics&) override;
@@ -18,7 +17,6 @@ public:
 
 private:
     AnalogExactAudioProcessor& audioProcessor;
-    juce::AudioProcessorValueTreeState& valueTreeState;
     
     // WebView component
     std::unique_ptr<juce::WebBrowserComponent> webView;
@@ -46,9 +44,6 @@ private:
     void updateWebViewParameters();
     
     // JavaScript bridge functions (thread-safe)
-    void executeJS (const juce::String& script);
-    
-    // Message thread check
     void safeEvaluateJS (const juce::String& script);
     
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AnalogExactAudioProcessorEditor)
