@@ -5,10 +5,18 @@ project(ANALOGEXACT VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Suppress deprecation warnings on macOS
+# macOS Universal Binary support
 if(APPLE)
+    # Suppress deprecation warnings
     add_compile_options(-Wno-deprecated-declarations)
+    
+    # Set deployment target
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+    
+    # Universal Binary (arm64 + x86_64) - can be overridden from command line
+    if(NOT DEFINED CMAKE_OSX_ARCHITECTURES OR CMAKE_OSX_ARCHITECTURES STREQUAL "")
+        set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
+    endif()
 endif()
 
 # Fetch JUCE 8.0.4 for macOS 15 compatibility
@@ -63,6 +71,11 @@ juce_add_plugin(AnalogExact
     AU_MAIN_TYPE kAudioUnitType_Effect
     
     NEEDS_WEBVIEW2 TRUE
+    
+    # macOS specific
+    HARDENED_RUNTIME_ENABLED TRUE
+    MICROPHONE_PERMISSION_ENABLED FALSE
+    CAMERA_PERMISSION_ENABLED FALSE
 )
 
 # Generate the JuceHeader.h file
