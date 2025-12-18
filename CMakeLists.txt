@@ -23,25 +23,16 @@ juce_add_plugin(AnalogExact
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
 
-    # CI-safe
     COPY_PLUGIN_AFTER_BUILD FALSE
 
     VST3_CATEGORIES "Fx"
     AU_MAIN_TYPE kAudioUnitType_Effect
     DESCRIPTION "Analog Tape Machine Emulation"
 
-    # JUCE 8 WebView support
     NEEDS_WEBVIEW2 TRUE
 )
 
-# Needed for projects that include <JuceHeader.h>
 juce_generate_juce_header(AnalogExact)
-
-# Embed the Web UI into the plugin binary
-juce_add_binary_data(AnalogExactWebUI
-    SOURCES
-        WebUI/index.html
-)
 
 target_sources(AnalogExact
     PRIVATE
@@ -62,7 +53,6 @@ target_compile_definitions(AnalogExact
 
 target_link_libraries(AnalogExact
     PRIVATE
-        AnalogExactWebUI
         juce::juce_audio_utils
         juce::juce_audio_processors
         juce::juce_dsp
@@ -73,7 +63,4 @@ target_link_libraries(AnalogExact
         juce::juce_recommended_warning_flags
 )
 
-target_include_directories(AnalogExact
-    PRIVATE
-        Source
-)
+target_include_directories(AnalogExact PRIVATE Source)
