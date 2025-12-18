@@ -20,46 +20,11 @@ private:
     AnalogExactAudioProcessor& audioProcessor;
     juce::AudioProcessorValueTreeState& valueTreeState;
     
-    // WebView component with custom handler
-    class CustomWebView : public juce::WebBrowserComponent
-    {
-    public:
-        CustomWebView (AnalogExactAudioProcessorEditor& ed) : editor (ed) {}
-        
-        bool pageAboutToLoad (const juce::String& newURL) override
-        {
-            // Intercept custom protocol for parameter changes
-            if (newURL.startsWith ("juceplugin://"))
-            {
-                // Use message thread to ensure thread safety
-                juce::MessageManager::callAsync ([this, newURL]() {
-                    editor.handleWebViewMessage (newURL);
-                });
-                return false; // Don't actually navigate
-            }
-            return true;
-        }
-        
-        void pageFinishedLoading (const juce::String& url) override
-        {
-            juce::ignoreUnused (url);
-            // Sync parameters after page loads
-            juce::MessageManager::callAsync ([this]() {
-                editor.updateWebViewParameters();
-            });
-        }
-        
-    private:
-        AnalogExactAudioProcessorEditor& editor;
-    };
+    // WebView component
+    std::unique_ptr<juce::WebBrowserComponent> webView;
     
-    std::unique_ptr<CustomWebView> webView;
-    bool webViewReady = false;
-    bool webViewAvailable = false;
-    
-    // Fallback UI for when WebView isn't available
-    juce::Label fallbackLabel;
-    juce::TextButton reloadButton {"Reload UI"};
+    // Flag to track if webview is ready
+    std::atomic<bool> webViewReady { false };
     
     // Track last sent values to avoid redundant updates
     float lastInputGain = 0.0f;
@@ -77,17 +42,14 @@ private:
     // Generate the HTML UI
     juce::String generateHTML();
     
-    // Send parameter updates to WebView
+    // Send parameter updates to WebView (thread-safe)
     void updateWebViewParameters();
     
-    // JavaScript bridge functions
+    // JavaScript bridge functions (thread-safe)
     void executeJS (const juce::String& script);
-    void setParameterInJS (const juce::String& paramName, float value);
-    void setParameterInJS (const juce::String& paramName, int value);
-    void setParameterInJS (const juce::String& paramName, bool value);
     
-    // Handle messages from WebView
-    void handleWebViewMessage (const juce::String& url);
+    // Message thread check
+    void safeEvaluateJS (const juce::String& script);
     
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AnalogExactAudioProcessorEditor)
 };
