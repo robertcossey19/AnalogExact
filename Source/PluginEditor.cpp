@@ -7,127 +7,95 @@ AnalogExactAudioProcessorEditor::AnalogExactAudioProcessorEditor (
     juce::AudioProcessorValueTreeState& vts)
     : AudioProcessorEditor (&p), audioProcessor (p), valueTreeState (vts)
 {
-    setSize (920, 800);
+    setSize (920, 820);
+    setResizable (false, false);
     
-    // Check if WebView is available (may not be on some Windows systems)
-    #if JUCE_WINDOWS
-        webViewAvailable = juce::WebBrowserComponent::areAnyWebBrowsersAvailable();
-    #else
-        webViewAvailable = true; // macOS and Linux should have WebView
-    #endif
-    
-    if (webViewAvailable)
+    // Create WebView - must be done on message thread
+    juce::MessageManager::callAsync ([this]()
     {
-        try
-        {
-            // Create WebView with custom handler
-            webView = std::make_unique<CustomWebView> (*this);
-            addAndMakeVisible (webView.get());
-            
-            // Generate and load HTML (with delay to ensure WebView is ready)
-            juce::MessageManager::callAsync ([this]() {
-                if (webView != nullptr)
-                {
-                    juce::String html = generateHTML();
-                    webView->goToURL ("data:text/html;charset=utf-8," + juce::URL::addEscapeChars (html, false));
-                    webViewReady = true;
-                    
-                    // Initial parameter sync (after a delay to let WebView load)
-                    juce::Timer::callAfterDelay (800, [this]() {
-                        if (webView != nullptr)
-                            updateWebViewParameters();
-                    });
-                }
-            });
-            
-            // Start timer for updates
-            startTimerHz (30);
-        }
-        catch (const std::exception& e)
-        {
-            DBG ("WebView creation failed: " + juce::String (e.what()));
-            webViewAvailable = false;
-        }
-    }
-    
-    // Fallback UI if WebView isn't available
-    if (!webViewAvailable)
-    {
-        fallbackLabel.setText ("WebView not available on this system.\n\n"
-                              "On Windows, you may need to install Microsoft Edge WebView2 Runtime.\n"
-                              "Download from: https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\n"
-                              "The plugin DSP is still working - only the UI is unavailable.",
-                              juce::dontSendNotification);
-        fallbackLabel.setJustificationType (juce::Justification::centred);
-        fallbackLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-        addAndMakeVisible (fallbackLabel);
+        if (this == nullptr) return;
         
-        reloadButton.onClick = [this]() {
-            // Try to recreate WebView
-            if (juce::WebBrowserComponent::areAnyWebBrowsersAvailable())
+        webView = std::make_unique<juce::WebBrowserComponent> (
+            juce::WebBrowserComponent::Options()
+                .withBackend (juce::WebBrowserComponent::Options::Backend::defaultBackend)
+                .withWinWebView2Options (
+                    juce::WebBrowserComponent::Options::WinWebView2{}
+                )
+        );
+        
+        if (webView != nullptr)
+        {
+            addAndMakeVisible (webView.get());
+            webView->setBounds (getLocalBounds());
+            
+            // Load HTML content
+            juce::String html = generateHTML();
+            webView->goToURL ("data:text/html;charset=utf-8," + juce::URL::addEscapeChars (html, false));
+            
+            // Mark as ready after a delay to let the page load
+            juce::Timer::callAfterDelay (1000, [this]()
             {
-                webViewAvailable = true;
-                fallbackLabel.setVisible (false);
-                reloadButton.setVisible (false);
-                
-                // Recreate the editor
-                if (auto* proc = dynamic_cast<AnalogExactAudioProcessor*> (&audioProcessor))
-                {
-                    // This will trigger editor recreation
-                    juce::MessageManager::callAsync ([proc]() {
-                        if (auto* editor = proc->getActiveEditor())
-                            editor->setSize (920, 800);
-                    });
-                }
-            }
-        };
-        addAndMakeVisible (reloadButton);
-    }
+                if (this == nullptr) return;
+                webViewReady = true;
+                updateWebViewParameters();
+            });
+        }
+    });
+    
+    // Start timer for VU updates
+    startTimerHz (24);
 }
 
 AnalogExactAudioProcessorEditor::~AnalogExactAudioProcessorEditor()
 {
     stopTimer();
-    
-    // Clean up WebView on message thread
-    if (webView != nullptr)
-    {
-        webView.reset();
-    }
+    webViewReady = false;
+    webView = nullptr;
 }
 
 //==============================================================================
 void AnalogExactAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (0xff1a202c));
-    
-    if (!webViewAvailable)
-    {
-        g.setColour (juce::Colour (0xff3a4454));
-        g.fillRoundedRectangle (getLocalBounds().reduced (20).toFloat(), 10.0f);
-    }
 }
 
 void AnalogExactAudioProcessorEditor::resized()
 {
-    if (webView != nullptr && webViewAvailable)
-    {
+    if (webView != nullptr)
         webView->setBounds (getLocalBounds());
-    }
-    else if (!webViewAvailable)
+}
+
+void AnalogExactAudioProcessorEditor::safeEvaluateJS (const juce::String& script)
+{
+    if (webView == nullptr || !webViewReady.load())
+        return;
+    
+    // Must be called from message thread
+    if (juce::MessageManager::getInstance()->isThisTheMessageThread())
     {
-        auto area = getLocalBounds().reduced (40);
-        fallbackLabel.setBounds (area.removeFromTop (area.getHeight() - 60));
-        reloadButton.setBounds (area.withSizeKeepingCentre (200, 40));
+        webView->evaluateJavascript (script);
     }
+    else
+    {
+        juce::MessageManager::callAsync ([this, script]()
+        {
+            if (webView != nullptr && webViewReady.load())
+                webView->evaluateJavascript (script);
+        });
+    }
+}
+
+void AnalogExactAudioProcessorEditor::executeJS (const juce::String& script)
+{
+    safeEvaluateJS (script);
 }
 
 void AnalogExactAudioProcessorEditor::timerCallback()
 {
-    if (!webViewReady || webView == nullptr)
+    if (!webViewReady.load() || webView == nullptr)
         return;
     
-    // Update VU meters (thread-safe)
+    // Update VU meters
     float levelL = audioProcessor.getInputLevelL();
     float levelR = audioProcessor.getInputLevelR();
     
@@ -135,69 +103,22 @@ void AnalogExactAudioProcessorEditor::timerCallback()
     float dbR = 20.0f * std::log10 (levelR + 1e-9f);
     
     juce::String script = juce::String::formatted (
-        "if (typeof updateVUMeters === 'function') updateVUMeters(%f, %f);",
+        "if(typeof updateVUMeters==='function')updateVUMeters(%f,%f);",
         dbL, dbR
     );
-    executeJS (script);
+    safeEvaluateJS (script);
     
-    // Check for parameter changes from plugin (automation, preset load, etc.)
+    // Update parameters from DAW automation
     updateWebViewParameters();
-}
-
-void AnalogExactAudioProcessorEditor::executeJS (const juce::String& script)
-{
-    if (webView != nullptr && webViewReady)
-    {
-        // Ensure we're on the message thread
-        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
-        {
-            webView->evaluateJavascript (script);
-        }
-        else
-        {
-            juce::MessageManager::callAsync ([this, script]() {
-                if (webView != nullptr && webViewReady)
-                    webView->evaluateJavascript (script);
-            });
-        }
-    }
-}
-
-void AnalogExactAudioProcessorEditor::setParameterInJS (const juce::String& paramName, float value)
-{
-    juce::String script = juce::String::formatted (
-        "if (typeof setParameter === 'function') setParameter('%s', %f);",
-        paramName.toRawUTF8(), value
-    );
-    executeJS (script);
-}
-
-void AnalogExactAudioProcessorEditor::setParameterInJS (const juce::String& paramName, int value)
-{
-    juce::String script = juce::String::formatted (
-        "if (typeof setParameter === 'function') setParameter('%s', %d);",
-        paramName.toRawUTF8(), value
-    );
-    executeJS (script);
-}
-
-void AnalogExactAudioProcessorEditor::setParameterInJS (const juce::String& paramName, bool value)
-{
-    juce::String script = juce::String::formatted (
-        "if (typeof setParameter === 'function') setParameter('%s', %s);",
-        paramName.toRawUTF8(), value ? "true" : "false"
-    );
-    executeJS (script);
 }
 
 void AnalogExactAudioProcessorEditor::updateWebViewParameters()
 {
-    if (!webViewReady || webView == nullptr)
+    if (!webViewReady.load() || webView == nullptr)
         return;
     
-    const float epsilon = 0.001f;
+    const float epsilon = 0.01f;
     
-    // Read current parameter values
     float inputGain = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::INPUT_GAIN_ID)->load();
     float outputGain = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::OUTPUT_GAIN_ID)->load();
     float bias = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::BIAS_ID)->load();
@@ -210,465 +131,248 @@ void AnalogExactAudioProcessorEditor::updateWebViewParameters()
     int headblock = (int) valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::HEADBLOCK_ID)->load();
     bool autoCal = valueTreeState.getRawParameterValue (AnalogExactAudioProcessor::AUTO_CAL_ID)->load() > 0.5f;
     
-    // Only send updates if values changed (using epsilon for floats)
     if (std::abs (inputGain - lastInputGain) > epsilon)
     {
-        setParameterInJS ("inputGain", inputGain);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('inputGain',%f);", inputGain));
         lastInputGain = inputGain;
     }
     
     if (std::abs (outputGain - lastOutputGain) > epsilon)
     {
-        setParameterInJS ("outputGain", outputGain);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('outputGain',%f);", outputGain));
         lastOutputGain = outputGain;
     }
     
     if (std::abs (bias - lastBias) > epsilon)
     {
-        setParameterInJS ("bias", bias);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('bias',%f);", bias));
         lastBias = bias;
     }
     
     if (monitor != lastMonitor)
     {
-        setParameterInJS ("monitor", monitor);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('monitor',%d);", monitor));
         lastMonitor = monitor;
     }
     
     if (speed != lastSpeed)
     {
-        setParameterInJS ("speed", speed);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('speed',%d);", speed));
         lastSpeed = speed;
     }
     
     if (flux != lastFlux)
     {
-        setParameterInJS ("flux", flux);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('flux',%d);", flux));
         lastFlux = flux;
     }
     
     if (eq != lastEQ)
     {
-        setParameterInJS ("eq", eq);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('eq',%d);", eq));
         lastEQ = eq;
     }
     
     if (tapeType != lastTapeType)
     {
-        setParameterInJS ("tapeType", tapeType);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('tapeType',%d);", tapeType));
         lastTapeType = tapeType;
     }
     
     if (transformer != lastTransformer)
     {
-        setParameterInJS ("transformer", transformer);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('transformer',%s);", transformer ? "true" : "false"));
         lastTransformer = transformer;
     }
     
     if (headblock != lastHeadblock)
     {
-        setParameterInJS ("headblock", headblock);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('headblock',%d);", headblock));
         lastHeadblock = headblock;
     }
     
     if (autoCal != lastAutoCal)
     {
-        setParameterInJS ("autoCal", autoCal);
+        safeEvaluateJS (juce::String::formatted ("if(typeof setParameter==='function')setParameter('autoCal',%s);", autoCal ? "true" : "false"));
         lastAutoCal = autoCal;
     }
 }
 
-void AnalogExactAudioProcessorEditor::handleWebViewMessage (const juce::String& url)
-{
-    // Parse URL like: juceplugin://parameterChanged?id=inputGain&value=5.0
-    auto queryStart = url.indexOf ("?");
-    if (queryStart < 0)
-        return;
-    
-    auto queryString = url.substring (queryStart + 1);
-    auto params = juce::StringArray::fromTokens (queryString, "&", "");
-    
-    juce::String paramId, paramValue;
-    
-    for (auto& param : params)
-    {
-        auto tokens = juce::StringArray::fromTokens (param, "=", "");
-        if (tokens.size() == 2)
-        {
-            if (tokens[0] == "id")
-                paramId = tokens[1];
-            else if (tokens[0] == "value")
-                paramValue = tokens[1];
-        }
-    }
-    
-    if (paramId.isEmpty())
-        return;
-    
-    // Update the corresponding parameter (thread-safe)
-    auto updateParam = [this, paramId, paramValue]() {
-        if (paramId == "inputGain")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::INPUT_GAIN_ID)->setValueNotifyingHost ((paramValue.getFloatValue() + 12.0f) / 24.0f);
-        else if (paramId == "outputGain")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::OUTPUT_GAIN_ID)->setValueNotifyingHost ((paramValue.getFloatValue() + 24.0f) / 30.0f);
-        else if (paramId == "bias")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::BIAS_ID)->setValueNotifyingHost ((paramValue.getFloatValue() + 5.0f) / 10.0f);
-        else if (paramId == "monitor")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::MONITOR_ID)->setValueNotifyingHost (paramValue.getFloatValue());
-        else if (paramId == "speed")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::SPEED_ID)->setValueNotifyingHost (paramValue.getFloatValue() / 2.0f);
-        else if (paramId == "flux")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::FLUX_ID)->setValueNotifyingHost (paramValue.getFloatValue() / 2.0f);
-        else if (paramId == "eq")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::EQ_ID)->setValueNotifyingHost (paramValue.getFloatValue());
-        else if (paramId == "tapeType")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::TAPE_TYPE_ID)->setValueNotifyingHost (paramValue.getFloatValue() / 5.0f);
-        else if (paramId == "transformer")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::TRANSFORMER_ID)->setValueNotifyingHost (paramValue == "true" ? 1.0f : 0.0f);
-        else if (paramId == "headblock")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::HEADBLOCK_ID)->setValueNotifyingHost (paramValue.getFloatValue());
-        else if (paramId == "autoCal")
-            valueTreeState.getParameter (AnalogExactAudioProcessor::AUTO_CAL_ID)->setValueNotifyingHost (paramValue == "true" ? 1.0f : 0.0f);
-    };
-    
-    // Ensure parameter updates happen on message thread
-    if (juce::MessageManager::getInstance()->isThisTheMessageThread())
-        updateParam();
-    else
-        juce::MessageManager::callAsync (updateParam);
-}
-
 juce::String AnalogExactAudioProcessorEditor::generateHTML()
 {
-    // Split HTML into parts to avoid raw string literal issues with </
     juce::String html;
     
-    html += "<!DOCTYPE html>\n";
-    html += "<html lang=\"en\">\n";
-    html += "<head>\n";
-    html += "<meta charset=\"utf-8\"/>\n";
-    html += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n";
-    html += "<title>ANALOGEXACT<";
-    html += "/title>\n";
-    html += "<script src=\"https://cdn.tailwindcss.com\"><";
-    html += "/script>\n";
-    html += "<link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono&display=swap\" rel=\"stylesheet\">\n";
-    html += "<style>\n";
-    html += "html,body{height:100%;background:#1a202c;margin:0;padding:0;overflow:hidden}\n";
-    html += "body{font-family:'Inter',sans-serif;color:#e5e7eb}\n";
-    html += ".metal-panel{background:linear-gradient(145deg,#4a5568,#3a4454);border:1px solid #718096;border-top-color:#a0aec0}\n";
-    html += ".module-bg{background:rgba(0,0,0,.2);border:1px solid rgba(0,0,0,.4);box-shadow:inset 0 2px 6px rgba(0,0,0,.4)}\n";
-    html += ".knob{position:relative;width:80px;height:80px;border-radius:50%;background:linear-gradient(145deg,#5a6578,#2d3748);border:2px solid #1a202c;box-shadow:0 5px 10px rgba(0,0,0,.5),inset 0 2px 3px rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;touch-action:none}\n";
-    html += ".knob-ind{position:absolute;width:4px;height:12px;background:#e2e8f0;top:6px;border-radius:2px;transform-origin:center 34px;box-shadow:0 0 3px rgba(255,255,255,.5)}\n";
-    html += ".vu-housing{background:#111827;border:4px solid #4b5563;border-radius:10px;padding:12px;box-shadow:inset 0 0 20px rgba(0,0,0,.8)}\n";
-    html += ".vu-scale{position:relative;width:100%;height:60px;background:#ffebcd;border-radius:4px;overflow:hidden}\n";
-    html += ".vu-needle{position:absolute;width:2px;height:100%;background:#dc2626;bottom:0;left:50%;transform-origin:bottom center;transition:transform .04s linear;box-shadow:0 0 5px #dc2626}\n";
-    html += ".vu-dim{opacity:.35;filter:grayscale(.3)}\n";
-    html += ".switch-group button{background:#374151;color:#e5e7eb;padding:8px 12px;border-radius:6px;border:1px solid #1f2937;font-weight:600;transition:all .15s}\n";
-    html += ".switch-group button.active{background:#f6ad55;color:#1a202c;box-shadow:inset 0 2px 4px rgba(0,0,0,.4)}\n";
-    html += ".lamp{width:10px;height:10px;border-radius:50%;background:#374151;box-shadow:inset 0 0 3px rgba(0,0,0,.8)}\n";
-    html += ".lamp.on.green{background:#34d399;box-shadow:0 0 6px #34d399}\n";
-    html += ".lamp.on.red{background:#f87171;box-shadow:0 0 6px #f87171}\n";
-    html += "#tech-panel{max-height:0;opacity:0;overflow:hidden;transition:max-height .5s ease,opacity .4s ease}\n";
-    html += "#tech-panel.open{max-height:600px;opacity:1}\n";
-    html += ".toggle-switch{display:inline-block;width:50px;height:26px;background:#4a5568;border-radius:13px;cursor:pointer;position:relative;border:1px solid #1a202c;transition:background .2s}\n";
-    html += ".toggle-switch.active{background:#f6ad55}\n";
-    html += ".toggle-switch-handle{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:transform .2s}\n";
-    html += ".toggle-switch.active .toggle-switch-handle{transform:translateX(24px)}\n";
-    html += "<";
-    html += "/style>\n";
-    html += "<";
-    html += "/head>\n";
-    html += "<body>\n";
-    html += "  <div class=\"metal-panel rounded-2xl p-4 w-full h-full flex flex-col\" style=\"max-width:900px;margin:0 auto\">\n";
-    html += "    <div class=\"flex justify-between items-center pb-3 border-b border-black/30\">\n";
-    html += "      <div>\n";
-    html += "        <h1 class=\"text-2xl font-bold text-white tracking-wider\">ANALOGEXACT<";
-    html += "/h1>\n";
-    html += "        <p class=\"text-xs text-gray-400\">INPUT monitor = true hard bypass • Non-linear core @ 768 kHz (120 taps)<";
-    html += "/p>\n";
-    html += "      <";
-    html += "/div>\n";
-    html += "    <";
-    html += "/div>\n\n";
-    html += "    <div class=\"grid grid-cols-1 gap-3 mt-3\">\n";
-    html += "      <div class=\"grid grid-cols-2 gap-3\">\n";
-    html += "        <div id=\"vuLwrap\" class=\"vu-housing\">\n";
-    html += "          <div class=\"flex items-center justify-between text-xs mb-1\">\n";
-    html += "            <span id=\"vuLabelL\" class=\"text-gray-300\">VU - L<";
-    html += "/span>\n";
-    html += "            <span class=\"text-gray-500\">-20  -10   0   +3  +5<";
-    html += "/span>\n";
-    html += "          <";
-    html += "/div>\n";
-    html += "          <div class=\"vu-scale\"><div id=\"vuL\" class=\"vu-needle\" style=\"transform:rotate(-70deg)\"><";
-    html += "/div><";
-    html += "/div>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "        <div id=\"vuRwrap\" class=\"vu-housing\">\n";
-    html += "          <div class=\"flex items-center justify-between text-xs mb-1\">\n";
-    html += "            <span id=\"vuLabelR\" class=\"text-gray-300\">VU - R<";
-    html += "/span>\n";
-    html += "            <span class=\"text-gray-500\">-20  -10   0   +3  +5<";
-    html += "/span>\n";
-    html += "          <";
-    html += "/div>\n";
-    html += "          <div class=\"vu-scale\"><div id=\"vuR\" class=\"vu-needle\" style=\"transform:rotate(-70deg)\"><";
-    html += "/div><";
-    html += "/div>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "      <";
-    html += "/div>\n\n";
-    html += "      <div class=\"flex items-center gap-3 px-2\">\n";
-    html += "        <div class=\"flex items-center gap-2\">\n";
-    html += "          <div id=\"lamp-ready\" class=\"lamp on green\"><";
-    html += "/div><span class=\"text-xs\">READY<";
-    html += "/span>\n";
-    html += "          <div id=\"lamp-play\" class=\"lamp\"><";
-    html += "/div><span class=\"text-xs\">PLAY<";
-    html += "/span>\n";
-    html += "          <div id=\"lamp-stop\" class=\"lamp on red\"><";
-    html += "/div><span class=\"text-xs\">STOP<";
-    html += "/span>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "        <div class=\"flex items-center gap-2 pl-4 border-l border-black/30\">\n";
-    html += "          <div id=\"lamp-ch1\" class=\"lamp on green\"><";
-    html += "/div><span class=\"text-xs\">CH-1<";
-    html += "/span>\n";
-    html += "          <div id=\"lamp-ch2\" class=\"lamp on green\"><";
-    html += "/div><span class=\"text-xs\">CH-2<";
-    html += "/span>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "      <";
-    html += "/div>\n\n";
-    html += "      <div class=\"grid grid-cols-3 gap-4\">\n";
-    html += "        <div class=\"module-bg p-4 rounded-lg flex flex-col items-center gap-2\">\n";
-    html += "          <h2 class=\"text-sm font-bold\">INPUT LEVEL<";
-    html += "/h2>\n";
-    html += "          <div class=\"knob\" id=\"knob-in\"><div class=\"knob-ind\"><";
-    html += "/div><";
-    html += "/div>\n";
-    html += "          <span id=\"val-in\" class=\"font-mono text-xs text-yellow-300\">0.0 dB<";
-    html += "/span>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "        <div class=\"module-bg p-4 rounded-lg flex flex-col items-center gap-2\">\n";
-    html += "          <h2 class=\"text-sm font-bold\">OUTPUT LEVEL<";
-    html += "/h2>\n";
-    html += "          <div class=\"knob\" id=\"knob-out\"><div class=\"knob-ind\"><";
-    html += "/div><";
-    html += "/div>\n";
-    html += "          <span id=\"val-out\" class=\"font-mono text-xs text-yellow-300\">0.0 dB<";
-    html += "/span>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "        <div class=\"module-bg p-4 rounded-lg flex flex-col items-center gap-2\">\n";
-    html += "          <h2 class=\"text-sm font-bold\">BIAS ADJUST<";
-    html += "/h2>\n";
-    html += "          <div class=\"knob\" id=\"knob-bias\"><div class=\"knob-ind\"><";
-    html += "/div><";
-    html += "/div>\n";
-    html += "          <span id=\"val-bias\" class=\"font-mono text-xs text-yellow-300\">0.0 dB<";
-    html += "/span>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "      <";
-    html += "/div>\n\n";
-    html += "      <div class=\"grid grid-cols-2 gap-4\">\n";
-    html += "        <div class=\"module-bg p-4 rounded-lg\">\n";
-    html += "          <h2 class=\"text-sm font-bold mb-2 text-center\">MONITOR<";
-    html += "/h2>\n";
-    html += "          <div id=\"monitor\" class=\"switch-group flex gap-1\">\n";
-    html += "            <button data-monitor=\"0\" class=\"flex-1 active\">INPUT<";
-    html += "/button>\n";
-    html += "            <button data-monitor=\"1\" class=\"flex-1\">REPRO<";
-    html += "/button>\n";
-    html += "          <";
-    html += "/div>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "        <div class=\"module-bg p-4 rounded-lg\">\n";
-    html += "          <h2 class=\"text-sm font-bold mb-2 text-center\">HEADBLOCK<";
-    html += "/h2>\n";
-    html += "          <div id=\"headblock\" class=\"switch-group flex gap-1\">\n";
-    html += "            <button data-headblock=\"0\" class=\"flex-1 active\">STEREO<";
-    html += "/button>\n";
-    html += "            <button data-headblock=\"1\" class=\"flex-1\">MONO<";
-    html += "/button>\n";
-    html += "          <";
-    html += "/div>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "      <";
-    html += "/div>\n";
-    html += "    <";
-    html += "/div>\n\n";
-    html += "    <div class=\"text-center pt-2\">\n";
-    html += "      <button id=\"toggle-tech\" class=\"text-yellow-400 hover:text-yellow-300 font-semibold text-xs\">Technician's Setup Panel ▼<";
-    html += "/button>\n";
-    html += "    <";
-    html += "/div>\n\n";
-    html += "    <div id=\"tech-panel\" class=\"module-bg rounded-lg p-3 mt-2\">\n";
-    html += "      <div class=\"grid grid-cols-3 gap-3 text-xs\">\n";
-    html += "        <div>\n";
-    html += "          <label class=\"font-semibold block mb-1 text-center\">SPEED (IPS)<";
-    html += "/label>\n";
-    html += "          <div id=\"speed\" class=\"switch-group flex gap-1\">\n";
-    html += "            <button data-speed=\"0\">7.5<";
-    html += "/button>\n";
-    html += "            <button data-speed=\"1\" class=\"active\">15<";
-    html += "/button>\n";
-    html += "            <button data-speed=\"2\">30<";
-    html += "/button>\n";
-    html += "          <";
-    html += "/div>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "        <div>\n";
-    html += "          <label class=\"font-semibold block mb-1 text-center\">FLUX (nWb/m)<";
-    html += "/label>\n";
-    html += "          <div id=\"flux\" class=\"switch-group flex gap-1\">\n";
-    html += "            <button data-flux=\"0\">185<";
-    html += "/button>\n";
-    html += "            <button data-flux=\"1\" class=\"active\">250<";
-    html += "/button>\n";
-    html += "            <button data-flux=\"2\">370<";
-    html += "/button>\n";
-    html += "          <";
-    html += "/div>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "        <div>\n";
-    html += "          <label class=\"font-semibold block mb-1 text-center\">EQ<";
-    html += "/label>\n";
-    html += "          <div id=\"eq\" class=\"switch-group flex gap-1\">\n";
-    html += "            <button data-eq=\"0\" class=\"active\">NAB<";
-    html += "/button>\n";
-    html += "            <button data-eq=\"1\">IEC<";
-    html += "/button>\n";
-    html += "          <";
-    html += "/div>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "      <";
-    html += "/div>\n";
-    html += "      <div class=\"mt-3\">\n";
-    html += "        <label class=\"font-semibold block mb-1 text-center text-xs\">TAPE TYPE<";
-    html += "/label>\n";
-    html += "        <div id=\"tape\" class=\"switch-group grid grid-cols-3 gap-1\">\n";
-    html += "          <button data-tapetype=\"0\">406<";
-    html += "/button>\n";
-    html += "          <button data-tapetype=\"1\" class=\"active\">456<";
-    html += "/button>\n";
-    html += "          <button data-tapetype=\"2\">499<";
-    html += "/button>\n";
-    html += "          <button data-tapetype=\"3\">GP9<";
-    html += "/button>\n";
-    html += "          <button data-tapetype=\"4\">SM900<";
-    html += "/button>\n";
-    html += "          <button data-tapetype=\"5\">SM911<";
-    html += "/button>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "      <";
-    html += "/div>\n";
-    html += "      <div class=\"flex gap-3 mt-3 items-center justify-center\">\n";
-    html += "        <div class=\"flex items-center gap-2\">\n";
-    html += "          <div id=\"transformer\" class=\"toggle-switch active\"><div class=\"toggle-switch-handle\"><";
-    html += "/div><";
-    html += "/div>\n";
-    html += "          <span class=\"text-xs font-semibold\">Transformer I/O<";
-    html += "/span>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "        <div class=\"flex items-center gap-2\">\n";
-    html += "          <div id=\"autocal\" class=\"toggle-switch active\"><div class=\"toggle-switch-handle\"><";
-    html += "/div><";
-    html += "/div>\n";
-    html += "          <span class=\"text-xs font-semibold\">Auto Cal<";
-    html += "/span>\n";
-    html += "        <";
-    html += "/div>\n";
-    html += "      <";
-    html += "/div>\n";
-    html += "    <";
-    html += "/div>\n";
-    html += "  <";
-    html += "/div>\n\n";
+    html << "<!DOCTYPE html>";
+    html << "<html lang='en'>";
+    html << "<head>";
+    html << "<meta charset='utf-8'/>";
+    html << "<meta name='viewport' content='width=device-width,initial-scale=1'/>";
+    html << "<title>ANALOGEXACT<" << "/title>";
+    html << "<style>";
+    html << "html,body{height:100%;background:#1a202c;margin:0;padding:0;overflow:hidden;font-family:'Inter',system-ui,sans-serif;color:#e5e7eb}";
+    html << ".metal-panel{background:linear-gradient(145deg,#4a5568,#3a4454);border:1px solid #718096;border-top-color:#a0aec0;border-radius:16px;padding:16px;height:calc(100% - 32px);box-sizing:border-box;display:flex;flex-direction:column}";
+    html << ".module-bg{background:rgba(0,0,0,.2);border:1px solid rgba(0,0,0,.4);box-shadow:inset 0 2px 6px rgba(0,0,0,.4);border-radius:8px;padding:16px}";
+    html << ".knob{position:relative;width:80px;height:80px;border-radius:50%;background:linear-gradient(145deg,#5a6578,#2d3748);border:2px solid #1a202c;box-shadow:0 5px 10px rgba(0,0,0,.5),inset 0 2px 3px rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;touch-action:none}";
+    html << ".knob-ind{position:absolute;width:4px;height:12px;background:#e2e8f0;top:6px;border-radius:2px;transform-origin:center 34px;box-shadow:0 0 3px rgba(255,255,255,.5)}";
+    html << ".vu-housing{background:#111827;border:4px solid #4b5563;border-radius:10px;padding:12px;box-shadow:inset 0 0 20px rgba(0,0,0,.8)}";
+    html << ".vu-scale{position:relative;width:100%;height:60px;background:#ffebcd;border-radius:4px;overflow:hidden}";
+    html << ".vu-needle{position:absolute;width:2px;height:100%;background:#dc2626;bottom:0;left:50%;transform-origin:bottom center;transition:transform .04s linear;box-shadow:0 0 5px #dc2626}";
+    html << ".vu-dim{opacity:.35;filter:grayscale(.3)}";
+    html << ".switch-group{display:flex;gap:4px}";
+    html << ".switch-group button{background:#374151;color:#e5e7eb;padding:8px 12px;border-radius:6px;border:1px solid #1f2937;font-weight:600;cursor:pointer;flex:1;font-size:12px}";
+    html << ".switch-group button.active{background:#f6ad55;color:#1a202c;box-shadow:inset 0 2px 4px rgba(0,0,0,.4)}";
+    html << ".lamp{width:10px;height:10px;border-radius:50%;background:#374151;box-shadow:inset 0 0 3px rgba(0,0,0,.8);display:inline-block}";
+    html << ".lamp.on.green{background:#34d399;box-shadow:0 0 6px #34d399}";
+    html << ".lamp.on.red{background:#f87171;box-shadow:0 0 6px #f87171}";
+    html << "#tech-panel{max-height:0;opacity:0;overflow:hidden;transition:max-height .5s ease,opacity .4s ease}";
+    html << "#tech-panel.open{max-height:400px;opacity:1}";
+    html << ".toggle-switch{display:inline-block;width:50px;height:26px;background:#4a5568;border-radius:13px;cursor:pointer;position:relative;border:1px solid #1a202c;transition:background .2s}";
+    html << ".toggle-switch.active{background:#f6ad55}";
+    html << ".toggle-switch-handle{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:transform .2s}";
+    html << ".toggle-switch.active .toggle-switch-handle{transform:translateX(24px)}";
+    html << ".grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}";
+    html << ".grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}";
+    html << ".text-center{text-align:center}";
+    html << ".text-xs{font-size:11px}";
+    html << ".text-sm{font-size:13px}";
+    html << ".font-bold{font-weight:700}";
+    html << ".font-mono{font-family:monospace}";
+    html << ".text-yellow{color:#fcd34d}";
+    html << ".text-gray{color:#9ca3af}";
+    html << ".flex{display:flex}";
+    html << ".items-center{align-items:center}";
+    html << ".justify-center{justify-content:center}";
+    html << ".gap-2{gap:8px}";
+    html << ".gap-3{gap:12px}";
+    html << ".mb-1{margin-bottom:4px}";
+    html << ".mb-2{margin-bottom:8px}";
+    html << ".mt-2{margin-top:8px}";
+    html << ".mt-3{margin-top:12px}";
+    html << ".pb-3{padding-bottom:12px}";
+    html << ".border-b{border-bottom:1px solid rgba(0,0,0,.3)}";
+    html << "<" << "/style>";
+    html << "<" << "/head>";
+    html << "<body>";
+    html << "<div class='metal-panel'>";
     
-    // JavaScript (minified and in one block to avoid issues)
-    html += "<script>\n";
-    html += "(function(){'use strict';\n";
-    html += "const $=function(id){return document.getElementById(id);};\n";
-    html += "const state={inDb:0,outDb:0,bias:0,monitor:0,speed:1,flux:1,eq:0,tapeType:1,transformer:true,headblock:0,autoCal:true};\n";
-    html += "function makeKnob(knobId,valId,key,min,max,fmt){\n";
-    html += "  const el=$(knobId),ind=el.querySelector('.knob-ind'),val=$(valId);\n";
-    html += "  let dragging=false,startY=0,startVal=0;\n";
-    html += "  function setVal(v){\n";
-    html += "    const c=Math.min(max,Math.max(min,v));\n";
-    html += "    state[key]=Math.round(c*10)/10;\n";
-    html += "    const pct=(state[key]-min)/(max-min);\n";
-    html += "    ind.style.transform='rotate('+(270*pct-135)+'deg)';\n";
-    html += "    val.textContent=fmt(state[key]);\n";
-    html += "    window.sendParameterToPlugin&&window.sendParameterToPlugin(key,state[key]);\n";
-    html += "  }\n";
-    html += "  setVal(state[key]||0);\n";
-    html += "  el.addEventListener('pointerdown',function(e){dragging=true;startY=e.clientY;startVal=state[key];e.preventDefault();});\n";
-    html += "  el.addEventListener('pointermove',function(e){if(!dragging)return;const dy=startY-e.clientY;setVal(startVal+(dy/150)*(max-min));});\n";
-    html += "  const end=function(){dragging=false;};\n";
-    html += "  el.addEventListener('pointerup',end);\n";
-    html += "  el.addEventListener('pointercancel',end);\n";
-    html += "  el.addEventListener('wheel',function(e){e.preventDefault();const step=(max-min)/100;setVal(state[key]+(e.deltaY<0?step:-step));},{passive:false});\n";
-    html += "  return setVal;\n";
-    html += "}\n";
-    html += "const setInput=makeKnob('knob-in','val-in','inDb',-12,12,function(v){return v.toFixed(1)+' dB';});\n";
-    html += "const setOutput=makeKnob('knob-out','val-out','outDb',-24,6,function(v){return v.toFixed(1)+' dB';});\n";
-    html += "const setBias=makeKnob('knob-bias','val-bias','bias',-5,5,function(v){return v.toFixed(1)+' dB';});\n";
-    html += "function setupButtonGroup(groupId,key){\n";
-    html += "  const group=$(groupId);\n";
-    html += "  group.addEventListener('click',function(e){\n";
-    html += "    if(e.target.tagName!=='BUTTON')return;\n";
-    html += "    const val=parseInt(e.target.dataset[key]);\n";
-    html += "    state[key]=val;\n";
-    html += "    group.querySelectorAll('button').forEach(function(b){b.classList.remove('active');});\n";
-    html += "    e.target.classList.add('active');\n";
-    html += "    window.sendParameterToPlugin&&window.sendParameterToPlugin(key,val);\n";
-    html += "    updateChannelLamps();\n";
-    html += "  });\n";
-    html += "}\n";
-    html += "setupButtonGroup('monitor','monitor');\n";
-    html += "setupButtonGroup('headblock','headblock');\n";
-    html += "setupButtonGroup('speed','speed');\n";
-    html += "setupButtonGroup('flux','flux');\n";
-    html += "setupButtonGroup('eq','eq');\n";
-    html += "setupButtonGroup('tape','tapetype');\n";
-    html += "function setupToggle(id,key){\n";
-    html += "  const el=$(id);\n";
-    html += "  el.addEventListener('click',function(){\n";
-    html += "    state[key]=!state[key];\n";
-    html += "    el.classList.toggle('active',state[key]);\n";
-    html += "    window.sendParameterToPlugin&&window.sendParameterToPlugin(key,state[key]);\n";
-    html += "  });\n";
-    html += "}\n";
-    html += "setupToggle('transformer','transformer');\n";
-    html += "setupToggle('autocal','autoCal');\n";
-    html += "$('toggle-tech').addEventListener('click',function(){\n";
-    html += "  const panel=$('tech-panel');\n";
-    html += "  const open=panel.classList.contains('open');\n";
-    html += "  if(open){panel.classList.remove('open');$('toggle-tech').textContent=\"Technician's Setup Panel \\u25BC\";}\n";
-    html += "  else{panel.classList.add('open');$('toggle-tech').textContent=\"Technician's Setup Panel \\u25B2\";}\n";
-    html += "});\n";
-    html += "window.updateVUMeters=function(dbL,dbR){\n";
-    html += "  const needle=function(db){return Math.max(-70,Math.min(20,(db+50)*2.25-70));};\n";
-    html += "  $('vuL').style.transform='rotate('+needle(dbL)+'deg)';\n";
-    html += "  $('vuR').style.transform='rotate('+needle(dbR)+'deg)';\n";
-    html += "};\n";
-    html += "window.setParameter=function(name,value){\n";
-    html += "  if(name==='inputGain'){setInput(value);}\n";
-    html += "  else if(name==='outputGain'){setOutput(value);}\n";
-    html += "  else if(name==='bias'){setBias(value);}\n";
-    html += "  else if(name==='monitor'){state.monitor=value;$('monitor').querySelectorAll('button').forEach(
+    // Header
+    html << "<div class='pb-3 border-b mb-2'>";
+    html << "<h1 style='font-size:24px;font-weight:700;color:white;margin:0'>ANALOGEXACT<" << "/h1>";
+    html << "<p class='text-xs text-gray' style='margin:4px 0 0'>INPUT monitor = true hard bypass • Non-linear core @ 768 kHz<" << "/p>";
+    html << "<" << "/div>";
+    
+    // VU Meters
+    html << "<div class='grid-2 mb-2'>";
+    html << "<div id='vuLwrap' class='vu-housing'>";
+    html << "<div class='flex items-center' style='justify-content:space-between'><span class='text-xs' id='vuLabelL'>VU - L<" << "/span><span class='text-xs text-gray'>-20 -10 0 +3 +5<" << "/span><" << "/div>";
+    html << "<div class='vu-scale mt-2'><div id='vuL' class='vu-needle' style='transform:rotate(-70deg)'><" << "/div><" << "/div>";
+    html << "<" << "/div>";
+    html << "<div id='vuRwrap' class='vu-housing'>";
+    html << "<div class='flex items-center' style='justify-content:space-between'><span class='text-xs' id='vuLabelR'>VU - R<" << "/span><span class='text-xs text-gray'>-20 -10 0 +3 +5<" << "/span><" << "/div>";
+    html << "<div class='vu-scale mt-2'><div id='vuR' class='vu-needle' style='transform:rotate(-70deg)'><" << "/div><" << "/div>";
+    html << "<" << "/div>";
+    html << "<" << "/div>";
+    
+    // Status Lamps
+    html << "<div class='flex items-center gap-3 mb-2' style='padding:0 8px'>";
+    html << "<div class='flex items-center gap-2'><div id='lamp-ready' class='lamp on green'><" << "/div><span class='text-xs'>READY<" << "/span><" << "/div>";
+    html << "<div class='flex items-center gap-2'><div id='lamp-play' class='lamp'><" << "/div><span class='text-xs'>PLAY<" << "/span><" << "/div>";
+    html << "<div class='flex items-center gap-2'><div id='lamp-stop' class='lamp on red'><" << "/div><span class='text-xs'>STOP<" << "/span><" << "/div>";
+    html << "<div style='border-left:1px solid rgba(0,0,0,.3);height:20px;margin:0 8px'><" << "/div>";
+    html << "<div class='flex items-center gap-2'><div id='lamp-ch1' class='lamp on green'><" << "/div><span class='text-xs'>CH-1<" << "/span><" << "/div>";
+    html << "<div class='flex items-center gap-2'><div id='lamp-ch2' class='lamp on green'><" << "/div><span class='text-xs'>CH-2<" << "/span><" << "/div>";
+    html << "<" << "/div>";
+    
+    // Knobs
+    html << "<div class='grid-3 mb-2'>";
+    html << "<div class='module-bg text-center'><h2 class='text-sm font-bold mb-2'>INPUT LEVEL<" << "/h2><div class='flex justify-center'><div class='knob' id='knob-in'><div class='knob-ind'><" << "/div><" << "/div><" << "/div><div id='val-in' class='font-mono text-xs text-yellow mt-2'>0.0 dB<" << "/div><" << "/div>";
+    html << "<div class='module-bg text-center'><h2 class='text-sm font-bold mb-2'>OUTPUT LEVEL<" << "/h2><div class='flex justify-center'><div class='knob' id='knob-out'><div class='knob-ind'><" << "/div><" << "/div><" << "/div><div id='val-out' class='font-mono text-xs text-yellow mt-2'>0.0 dB<" << "/div><" << "/div>";
+    html << "<div class='module-bg text-center'><h2 class='text-sm font-bold mb-2'>BIAS ADJUST<" << "/h2><div class='flex justify-center'><div class='knob' id='knob-bias'><div class='knob-ind'><" << "/div><" << "/div><" << "/div><div id='val-bias' class='font-mono text-xs text-yellow mt-2'>0.0 dB<" << "/div><" << "/div>";
+    html << "<" << "/div>";
+    
+    // Monitor & Headblock
+    html << "<div class='grid-2 mb-2'>";
+    html << "<div class='module-bg'><h2 class='text-sm font-bold mb-2 text-center'>MONITOR<" << "/h2><div id='monitor' class='switch-group'><button data-monitor='0' class='active'>INPUT<" << "/button><button data-monitor='1'>REPRO<" << "/button><" << "/div><" << "/div>";
+    html << "<div class='module-bg'><h2 class='text-sm font-bold mb-2 text-center'>HEADBLOCK<" << "/h2><div id='headblock' class='switch-group'><button data-headblock='0' class='active'>STEREO<" << "/button><button data-headblock='1'>MONO<" << "/button><" << "/div><" << "/div>";
+    html << "<" << "/div>";
+    
+    // Tech Panel Toggle
+    html << "<div class='text-center mb-2'><button id='toggle-tech' style='background:none;border:none;color:#fcd34d;cursor:pointer;font-weight:600;font-size:12px'>Technician's Setup Panel ▼<" << "/button><" << "/div>";
+    
+    // Tech Panel
+    html << "<div id='tech-panel' class='module-bg'>";
+    html << "<div class='grid-3 mb-2'>";
+    html << "<div><div class='text-xs font-bold mb-1 text-center'>SPEED (IPS)<" << "/div><div id='speed' class='switch-group'><button data-speed='0'>7.5<" << "/button><button data-speed='1' class='active'>15<" << "/button><button data-speed='2'>30<" << "/button><" << "/div><" << "/div>";
+    html << "<div><div class='text-xs font-bold mb-1 text-center'>FLUX (nWb/m)<" << "/div><div id='flux' class='switch-group'><button data-flux='0'>185<" << "/button><button data-flux='1' class='active'>250<" << "/button><button data-flux='2'>370<" << "/button><" << "/div><" << "/div>";
+    html << "<div><div class='text-xs font-bold mb-1 text-center'>EQ<" << "/div><div id='eq' class='switch-group'><button data-eq='0' class='active'>NAB<" << "/button><button data-eq='1'>IEC<" << "/button><" << "/div><" << "/div>";
+    html << "<" << "/div>";
+    html << "<div class='mb-2'><div class='text-xs font-bold mb-1 text-center'>TAPE TYPE<" << "/div><div id='tape' class='switch-group' style='display:grid;grid-template-columns:repeat(3,1fr);gap:4px'><button data-tapetype='0'>406<" << "/button><button data-tapetype='1' class='active'>456<" << "/button><button data-tapetype='2'>499<" << "/button><button data-tapetype='3'>GP9<" << "/button><button data-tapetype='4'>SM900<" << "/button><button data-tapetype='5'>SM911<" << "/button><" << "/div><" << "/div>";
+    html << "<div class='flex justify-center gap-3'>";
+    html << "<div class='flex items-center gap-2'><div id='transformer' class='toggle-switch active'><div class='toggle-switch-handle'><" << "/div><" << "/div><span class='text-xs font-bold'>Transformer I/O<" << "/span><" << "/div>";
+    html << "<div class='flex items-center gap-2'><div id='autocal' class='toggle-switch active'><div class='toggle-switch-handle'><" << "/div><" << "/div><span class='text-xs font-bold'>Auto Cal<" << "/span><" << "/div>";
+    html << "<" << "/div>";
+    html << "<" << "/div>";
+    
+    html << "<" << "/div>";
+    
+    // JavaScript
+    html << "<script>";
+    html << "(function(){'use strict';";
+    html << "var $=function(id){return document.getElementById(id);};";
+    html << "var state={inDb:0,outDb:0,bias:0,monitor:0,speed:1,flux:1,eq:0,tapeType:1,transformer:true,headblock:0,autoCal:true};";
+    
+    // Knob handler
+    html << "function makeKnob(knobId,valId,key,min,max,fmt){";
+    html << "var el=$(knobId),ind=el.querySelector('.knob-ind'),val=$(valId);";
+    html << "var dragging=false,startY=0,startVal=0;";
+    html << "function setVal(v){var c=Math.min(max,Math.max(min,v));state[key]=Math.round(c*10)/10;var pct=(state[key]-min)/(max-min);ind.style.transform='rotate('+(270*pct-135)+'deg)';val.textContent=fmt(state[key]);}";
+    html << "setVal(state[key]||0);";
+    html << "el.onpointerdown=function(e){dragging=true;startY=e.clientY;startVal=state[key];e.preventDefault();};";
+    html << "el.onpointermove=function(e){if(!dragging)return;var dy=startY-e.clientY;setVal(startVal+(dy/150)*(max-min));};";
+    html << "el.onpointerup=el.onpointercancel=function(){dragging=false;};";
+    html << "return setVal;}";
+    
+    html << "var setInput=makeKnob('knob-in','val-in','inDb',-12,12,function(v){return v.toFixed(1)+' dB';});";
+    html << "var setOutput=makeKnob('knob-out','val-out','outDb',-24,6,function(v){return v.toFixed(1)+' dB';});";
+    html << "var setBias=makeKnob('knob-bias','val-bias','bias',-5,5,function(v){return v.toFixed(1)+' dB';});";
+    
+    // Button groups
+    html << "function setupGroup(gid,key){var g=$(gid);g.onclick=function(e){if(e.target.tagName!=='BUTTON')return;var v=parseInt(e.target.dataset[key]);state[key]=v;g.querySelectorAll('button').forEach(function(b){b.classList.remove('active');});e.target.classList.add('active');updateLamps();};}";
+    html << "setupGroup('monitor','monitor');setupGroup('headblock','headblock');setupGroup('speed','speed');setupGroup('flux','flux');setupGroup('eq','eq');setupGroup('tape','tapetype');";
+    
+    // Toggles
+    html << "function setupToggle(id,key){var el=$(id);el.onclick=function(){state[key]=!state[key];el.classList.toggle('active',state[key]);};}";
+    html << "setupToggle('transformer','transformer');setupToggle('autocal','autoCal');";
+    
+    // Tech panel
+    html << "$('toggle-tech').onclick=function(){var p=$('tech-panel');var o=p.classList.contains('open');p.classList.toggle('open',!o);this.textContent=o?\"Technician's Setup Panel \\u25BC\":\"Technician's Setup Panel \\u25B2\";};";
+    
+    // VU meters
+    html << "window.updateVUMeters=function(dbL,dbR){var needle=function(db){return Math.max(-70,Math.min(20,(db+50)*2.25-70));};$('vuL').style.transform='rotate('+needle(dbL)+'deg)';$('vuR').style.transform='rotate('+needle(dbR)+'deg)';};";
+    
+    // Set parameter from C++
+    html << "window.setParameter=function(n,v){";
+    html << "if(n==='inputGain')setInput(v);";
+    html << "else if(n==='outputGain')setOutput(v);";
+    html << "else if(n==='bias')setBias(v);";
+    html << "else if(n==='monitor'){state.monitor=v;$('monitor').querySelectorAll('button').forEach(function(b){b.classList.toggle('active',parseInt(b.dataset.monitor)===v);});}";
+    html << "else if(n==='speed'){state.speed=v;$('speed').querySelectorAll('button').forEach(function(b){b.classList.toggle('active',parseInt(b.dataset.speed)===v);});}";
+    html << "else if(n==='flux'){state.flux=v;$('flux').querySelectorAll('button').forEach(function(b){b.classList.toggle('active',parseInt(b.dataset.flux)===v);});}";
+    html << "else if(n==='eq'){state.eq=v;$('eq').querySelectorAll('button').forEach(function(b){b.classList.toggle('active',parseInt(b.dataset.eq)===v);});}";
+    html << "else if(n==='tapeType'){state.tapeType=v;$('tape').querySelectorAll('button').forEach(function(b){b.classList.toggle('active',parseInt(b.dataset.tapetype)===v);});}";
+    html << "else if(n==='transformer'){state.transformer=v;$('transformer').classList.toggle('active',v);}";
+    html << "else if(n==='headblock'){state.headblock=v;$('headblock').querySelectorAll('button').forEach(function(b){b.classList.toggle('active',parseInt(b.dataset.headblock)===v);});updateLamps();}";
+    html << "else if(n==='autoCal'){state.autoCal=v;$('autocal').classList.toggle('active',v);}";
+    html << "};";
+    
+    // Update lamps
+    html << "function updateLamps(){var m=(state.headblock===1);$('lamp-ch2').classList.toggle('on',!m);$('lamp-ch2').classList.toggle('green',!m);$('vuRwrap').classList.toggle('vu-dim',m);$('vuLabelR').textContent=m?'VU - R (idle)':'VU - R';}";
+    html << "updateLamps();";
+    
+    html << "})();";
+    html << "<" << "/script>";
+    html << "<" << "/body>";
+    html << "<" << "/html>";
+    
+    return html;
+}
